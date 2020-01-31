@@ -2,6 +2,7 @@ from appdirs import user_config_dir
 
 from enum import Enum, auto
 import os.path
+import signal
 from shutil import copyfile
 import yaml
 
@@ -81,41 +82,6 @@ class Erwin:
 
         self._first_boot = True
 
-    def apply_deltas(self, master_deltas, slave_deltas):
-        master_state = GoogleDriveFSState()
-
-        for file in sorted(master_deltas.removed, key=lambda x: x.path):
-            master_state.remove_file(file)
-            self.slave_fs.remove(file)
-
-    def do_first_boot(self):
-        # Download from master FS and rename any conflicts on slave
-        for file in sorted(self.master_fs.list(recursive=True), key=lambda f: f.path):
-            dest_file = self.slave_fs.search(file)
-
-            if file @ dest_file:
-                continue
-
-            if dest_file:  # Conflict
-                self.slave_fs.move(dest_file, dest_file.path + " (conflicted copy)")
-
-            if file.is_folder:
-                self.slave_fs.makedirs(file.path)
-            else:
-                self.master_fs.read(file, self.slave_fs.write(file))
-
-        # Upload from slave
-        for file in sorted(self.slave_fs.list(recursive=True), key=lambda f: f.path):
-            dest_file = self.master_fs.search(file.path)
-
-            if dest_file:
-                continue
-
-            if file.is_folder:
-                self.master_fs.makedirs(file.path)
-            else:
-                self.slave_fs.read(file, self.master_fs.write(file))
-
     def do_init(self):
         self.master_fs = GoogleDriveFS(**self._config["master_fs"]["params"])
         self.slave_fs = LocalFS(**self._config["slave_fs"]["params"])
@@ -137,13 +103,6 @@ class Erwin:
 
         # self.master_fs.get_state().save(master_state_file)
 
-        # On first ever boot we know we need to download files from remote to
-        # local. Check if we already have the same file to save some bandwidth.
-        # For each conflict, rename the local file and download the remote one.
-        # After that check if there are extra local files (including
-        # conflicting copies!) that are not in the remotelocation and push
-        # those upstream.
-
         prev_slave_state = LocalFSState.load(slave_state_file)
         slave_deltas = self.slave_fs.get_state() - prev_slave_state
         # print("Slave Changes")
@@ -153,29 +112,84 @@ class Erwin:
 
         mc, sc = master_deltas.conflicts(slave_deltas)
 
-        for file in master_deltas.removed:
-            slave_file = self.slave_fs.search(file.path)
-            if file.path in sc:
-                # Conflict master -> slave
-                conflict_file_path = "conflict_" + file.path
-                self.slave_fs.move(slave_file, conflict_file_path)
-                prev_slave_state.add_file(slave_file)
-            else:
-                self.slave_fs.remove(slave_file)
+        # register previou state handler with signals to gracefully shutdown
+        # while in the middle of applying deltas
 
-        for file in master_deltas.new:
-            if file.path in mc & sc:
-                # the file is being created/modified on both ends
-                pass
-            elif file.path in mc - sc:
-                # the file is being removed/moved by slave
-                pass
-            else:
-                # conflicts
-                pass
+        def save_prev_states(signum, frame):
+            prev_master_state.save(master_state_file)
+            prev_slave_state.save(slave_state_file)
 
-        for src, dst in master_deltas.renamed:
-            pass
+        old_int_handler = signal.signal(signal.SIGINT, save_prev_states)
+        old_term_handler = signal.signal(signal.SIGTERM, save_prev_states)
+
+        def move_conflict(master_file, slave_file):
+            conflict_file_path = "conflict_" + file.path
+            self.slave_fs.move(slave_file, conflict_file_path)
+
+        try:
+            for file in master_deltas.removed:
+                slave_file = self.slave_fs.search(file.path)
+
+                if file.path in sc:  # Conflict master -> slave
+                    move_conflict(file, slave_file)
+                else:
+                    self.slave_fs.remove(slave_file)
+
+                if slave_file:
+                    prev_slave_state.remove_file(slave_file)
+                prev_master_state.remove_file(file)
+
+            for file in master_deltas.new:
+                slave_file = self.slave_fs.search(file.path)
+                if not (file @ slave_file):
+                    if slave_file and file.path in mc & sc:
+                        # File is different, so slave file is conflict and we copy
+                        # master file over.
+                        move_conflict(file, slave_file)
+                    self.master_fs.read(file, self.slave_fs.write(file))
+                prev_slave_state.add_file(self.slave_fs.search(file.path))
+                prev_master_state.add_file(file)
+
+            for src, dst in master_deltas.renamed:
+                # src file has been moved/removed
+                slave_src_file = self.slave_fs.search(src.path)
+
+                if src.path in sc or not (src @ slave_src_file):
+                    # Conflict master -> slave
+                    move_conflict(src, slave_src_file)
+
+                # dst file has been created/modi1fied
+                slave_dst_file = self.slave_fs.search(dst.path)
+                if not (dst @ slave_dst_file):
+                    if slave_dst_file and dst.path in mc & sc:
+                        # File is different, so slave file is conflict and we copy
+                        # master file over.
+                        move_conflict(dst, slave_dst_file)
+
+                if slave_src_file:
+                    if src @ slave_src_file:
+                        self.slave_fs.move(src, dst.path)
+                        prev_slave_state.rename_file(prev_src_file, dst.path)
+                    else
+                        self.slave_fs.remove(slave_src_file)
+                        prev_slave_state.remove_file(slave_src_file)
+                        if not slave_dst_file:
+                            self.master_fs.read(dst, self.slave_fs.write(dst))
+                            slave_dst_file = self.slave_fs.search(dst.path)
+                            prev_slave_state.add_file(slave_dst_file)
+                else:
+                    if not slave_dst_file or not dst @ slave_dst_file:
+                        self.master_fs.read(dst, self.slave_fs.write(dst))
+                        prev_slave_state.add_file(self.slave_fs.search(dst.path))
+
+                prev_master_state.rename_file(src, dst.path)
+
+        # Get new slave deltas and apply them to master. As a sanity check,
+        # make sure there are no conflicts in this last step.
+
+        finally:
+            signal.signal(signal.SIGINT, old_int_handler)
+            signal.signal(signal.SIGTERM, old_term_handler)
 
         # print(mc, sc)
 

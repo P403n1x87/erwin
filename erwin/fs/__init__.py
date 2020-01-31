@@ -45,21 +45,16 @@ class Delta:
         return Delta._sort_by_path(self._removed)
 
     def conflicts(self, other) -> tuple:
-        self_new = {f.path for f in self.new}.union({f.path for _, f in self.renamed})
-        self_rem = {f.path for f in self.removed}.union(
-            {f.path for f, _ in self.renamed}
-        )
+        self_new = {f.path for f in self.new} | {f.path for _, f in self.renamed}
+        self_rem = {f.path for f in self.removed} | {f.path for f, _ in self.renamed}
 
-        other_new = {f.path for f in other.new}.union(
-            {f.path for _, f in other.renamed}
-        )
-        other_rem = {f.path for f in other.removed}.union(
-            {f.path for f, _ in other.renamed}
-        )
+        other_new = {f.path for f in other.new} | {f.path for _, f in other.renamed}
+
+        other_rem = {f.path for f in other.removed} | {f.path for f, _ in other.renamed}
 
         return (
-            self_new.intersection(other_new.union(other_rem)),
-            other_new.intersection(self_new.union(self_rem)),
+            self_new & (other_new | other_rem),
+            other_new & (self_new | self_rem),
         )
 
     def __str__(self):
@@ -105,7 +100,7 @@ class State(ABC):
         pass
 
     @abstractmethod
-    def rename_file(self, file):
+    def rename_file(self, file, dst):
         pass
 
     @abstractmethod
