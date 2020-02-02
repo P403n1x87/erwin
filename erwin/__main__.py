@@ -9,6 +9,7 @@ import yaml
 from erwin.fs import FileSystem
 from erwin.fs.drive import GoogleDriveFS, GoogleDriveFSState
 from erwin.fs.local import LocalFS, LocalFSState
+from erwin.logging import LOGGER
 
 
 APP_NAME = "erwin"
@@ -83,11 +84,11 @@ class Erwin:
         self._first_boot = True
 
     def do_init(self):
-        self.master_fs = GoogleDriveFS(**self._config["master_fs"]["params"])
+        # self.master_fs = GoogleDriveFS(**self._config["master_fs"]["params"])
+        self.master_fs = LocalFS(root="/tmp/Downloads")
+        LOGGER.debug(f"Created Master FS of type {type(self.master_fs)}")
         self.slave_fs = LocalFS(**self._config["slave_fs"]["params"])
-
-        if self._first_boot:
-            self.do_first_boot()
+        LOGGER.debug(f"Created Slave FS of type {type(self.slave_fs)}")
 
         master_state_file = os.path.join(
             CONFIG_DIR, f"{self._config['alias']}_master_state.pickle"
@@ -96,28 +97,37 @@ class Erwin:
             CONFIG_DIR, f"{self._config['alias']}_slave_state.pickle"
         )
 
-        prev_master_state = GoogleDriveFSState.load(master_state_file)
+        # prev_master_state = GoogleDriveFSState.load(master_state_file)
+        prev_master_state = LocalFSState.load(master_state_file)
+        LOGGER.debug(f"Previous state of Master FS loaded")
         master_deltas = self.master_fs.get_state() - prev_master_state
+        LOGGER.debug(f"Master deltas since last state save:\n{master_deltas}")
         # print("Master changes")
         # print(str(master_deltas))
 
         # self.master_fs.get_state().save(master_state_file)
 
         prev_slave_state = LocalFSState.load(slave_state_file)
+        LOGGER.debug("Previous state of Slave FS loaded")
         slave_deltas = self.slave_fs.get_state() - prev_slave_state
+        LOGGER.debug(f"Slave deltas since last state save:\n{slave_deltas}")
         # print("Slave Changes")
         # print(str(slave_deltas))
 
         # self.slave_fs.get_state().save(slave_state_file)
 
         mc, sc = master_deltas.conflicts(slave_deltas)
+        if mc or sc:
+            LOGGER.info(f"Detected conflicts since last boot. Master: {mc}; Slave {sc}")
 
         # register previou state handler with signals to gracefully shutdown
         # while in the middle of applying deltas
 
-        def save_prev_states(signum, frame):
+        def save_prev_states(signum=None, frame=None):
             prev_master_state.save(master_state_file)
+            LOGGER.info("Master FS state saved")
             prev_slave_state.save(slave_state_file)
+            LOGGER.info("Slave FS state saved")
 
         old_int_handler = signal.signal(signal.SIGINT, save_prev_states)
         old_term_handler = signal.signal(signal.SIGTERM, save_prev_states)
@@ -125,6 +135,10 @@ class Erwin:
         def move_conflict(master_file, slave_file):
             conflict_file_path = "conflict_" + file.path
             self.slave_fs.move(slave_file, conflict_file_path)
+            LOGGER.info(
+                "Conflicting file on slave ranamed:"
+                f"{master_file.path} -> {conflict_file_path}"
+            )
 
         try:
             for file in master_deltas.removed:
@@ -132,12 +146,13 @@ class Erwin:
 
                 if file.path in sc:  # Conflict master -> slave
                     move_conflict(file, slave_file)
-                else:
+                elif slave_file:
                     self.slave_fs.remove(slave_file)
 
                 if slave_file:
                     prev_slave_state.remove_file(slave_file)
                 prev_master_state.remove_file(file)
+                LOGGER.debug(f"Master removed file {file.path}")
 
             for file in master_deltas.new:
                 slave_file = self.slave_fs.search(file.path)
@@ -146,9 +161,10 @@ class Erwin:
                         # File is different, so slave file is conflict and we copy
                         # master file over.
                         move_conflict(file, slave_file)
-                    self.master_fs.read(file, self.slave_fs.write(file))
+                    self.slave_fs.write(self.master_fs.read(file), file)
                 prev_slave_state.add_file(self.slave_fs.search(file.path))
                 prev_master_state.add_file(file)
+                LOGGER.debug(f"Master created/modified {file.path}")
 
             for src, dst in master_deltas.renamed:
                 # src file has been moved/removed
@@ -170,27 +186,50 @@ class Erwin:
                     if src @ slave_src_file:
                         self.slave_fs.move(src, dst.path)
                         prev_slave_state.rename_file(prev_src_file, dst.path)
-                    else
+                    else:
                         self.slave_fs.remove(slave_src_file)
                         prev_slave_state.remove_file(slave_src_file)
                         if not slave_dst_file:
-                            self.master_fs.read(dst, self.slave_fs.write(dst))
+                            self.slave_fs.write(self.master_fs.read(dst), dst)
                             slave_dst_file = self.slave_fs.search(dst.path)
                             prev_slave_state.add_file(slave_dst_file)
                 else:
                     if not slave_dst_file or not dst @ slave_dst_file:
-                        self.master_fs.read(dst, self.slave_fs.write(dst))
+                        self.slave_fs.write(self.master_fs.read(dst), dst)
                         prev_slave_state.add_file(self.slave_fs.search(dst.path))
 
                 prev_master_state.rename_file(src, dst.path)
+                LOGGER.debug(f"Master renamed {src.path} -> {dst.path}")
 
-        # Get new slave deltas and apply them to master. As a sanity check,
-        # make sure there are no conflicts in this last step.
+            # Get new slave deltas and apply them to master. As a sanity check,
+            # make sure there are no conflicts in this last step.
+
+            new_slave_deltas = self.slave_fs.get_state() - prev_slave_state
+            mc, sc = master_deltas.conflicts(new_slave_deltas)
+            if mc or sc:
+                raise RuntimeError("Conflicts after master delta merges.")
+
+            for file in new_slave_deltas.new:
+                self.master_fs.write(self.slave_fs.read(file), file)
+                prev_master_state.add_file(self.master_fs.search(file.path))
+                prev_slave_state.add_file(file)
+                LOGGER.debug(f"Slave created/modified {file.path}")
+            for file in new_slave_deltas.removed:
+                master_file = self.master_fs.search(file.path)
+                if master_file:
+                    self.master_fs.remove(master_file)
+                    prev_master_state.remove_file(master_file)
+                prev_slave_state.remove_file(file)
+                LOGGER.debug(f"Slave removed {file.path}")
+            for src, dst in new_slave_deltas.renamed:
+                LOGGER.debug(f"WIP!! Slave moved {src.path} -> {dst.path}")
+                # TODO: WIP
 
         finally:
             signal.signal(signal.SIGINT, old_int_handler)
             signal.signal(signal.SIGTERM, old_term_handler)
 
+        save_prev_states()
         # print(mc, sc)
 
     def do_sync(self):

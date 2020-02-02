@@ -59,10 +59,10 @@ class Delta:
 
     def __str__(self):
         new = "\n".join(
-            [f"+ {f.created_date} {f.modified_date} {f.path}" for f in self.new]
+            [f"+ {f.modified_date} {f.path}" for f in self.new]
         )
         removed = "\n".join(
-            [f"- {f.created_date} {f.modified_date} {f.path}" for f in self.removed]
+            [f"- {f.modified_date} {f.path}" for f in self.removed]
         )
         renamed = "\n".join([f"M {s.path} -> {d.path}" for s, d in self.renamed])
 
@@ -71,7 +71,11 @@ class Delta:
 
 class State(ABC):
     def __init__(self):
-        self._data = {}
+        self._data = self.empty()
+
+    @abstractmethod
+    def empty(self):
+        pass
 
     def set(self, state: dict):
         self._data = state

@@ -293,10 +293,12 @@ class GoogleDriveFS(FileSystem):
                 if e.resp.status == 416:
                     break
                 raise
+        return buffer
 
-    def read(self, file: GoogleDriveFile, stream):
+    def read(self, file: GoogleDriveFile):
         try:
             request = self._drive.files().get_media(fileId=file.id)
+            stream = io.BytesIO()
             self._download(request, stream)
         except HttpError as e:
             # Export a Google Doc file
@@ -315,6 +317,9 @@ class GoogleDriveFS(FileSystem):
         # print("Download %d%%." % int(status.progress() * 100), end="\r")
 
         stream.flush()
+        stream.seek(0)
+
+        return stream
 
     def makedirs(self, file):
         pass

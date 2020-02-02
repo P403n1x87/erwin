@@ -33,6 +33,9 @@ class LocalFSState(State):
         )
         return state
 
+    def empty(self):
+        return {"by_path": {}, "by_hash": {}}
+
     def add_file(self, file):
         state = self.get()
         state["by_path"][file.path] = file
@@ -45,9 +48,10 @@ class LocalFSState(State):
 
     def rename_file(self, file: LocalFile, dst: str):
         state = self.get()
-        state["by_path"].pop(src.path)
-        src.path = dst
-        state["by_path"][dst] = src
+        state["by_path"].pop(file.path)
+        new_file = file.copy()
+        new_file.path = dst
+        state["by_path"][dst] = new_file
 
     def __sub__(self, prev):
         curr_state, prev_state = self.get(), prev.get()
@@ -153,10 +157,12 @@ class LocalFS(FileSystem):
         src.created_date = datetime.fromtimestamp(os.path.getctime(abs_dst))
         self.get_state().rename_file(src, dst)
 
-    def write(self, file):
+    def write(self, stream, file):
         abs_path = self._abs_path(file.path)
 
-        stream = open(abs_path, "wb")
+        with open(abs_path, "wb") as fout:
+            copyfileobj(stream, fout)
+            stream.close()
 
         mtime = datetime.timestamp(file.modified_date)
         os.utime(abs_path, (mtime, mtime))
@@ -164,5 +170,3 @@ class LocalFS(FileSystem):
         file = self._to_file(abs_path)
 
         self.get_state().add_file(file)
-
-        return stream
