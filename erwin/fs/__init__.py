@@ -38,7 +38,7 @@ class Delta:
 
     @property
     def renamed(self):
-        return Delta._sort_by_path(self._renamed)
+                return sorted(self._renamed, key=lambda x: x[0].path)
 
     @property
     def removed(self):
