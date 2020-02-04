@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime
 import os
 import hashlib
@@ -47,9 +48,8 @@ class LocalFSState(State):
         state["by_hash"].pop(file.md5)
 
     def rename_file(self, file: LocalFile, dst: str):
-        state = self.get()
-        state["by_path"].pop(file.path)
-        new_file = file.copy()
+        state = self.get() 
+        new_file = deepcopy(state["by_path"].pop(file.path))
         new_file.path = dst
         state["by_path"][dst] = new_file
 
