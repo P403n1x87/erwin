@@ -4,7 +4,7 @@ import os
 import hashlib
 import os.path
 
-from shutil import copyfileobj, move
+from shutil import copy, copyfileobj, move
 
 from erwin.fs import Delta, File, FileSystem, State
 
@@ -44,14 +44,20 @@ class LocalFSState(State):
 
     def remove_file(self, file):
         state = self.get()
-        state["by_path"].pop(file.path)
-        state["by_hash"].pop(file.md5)
+        try:
+            state["by_path"].pop(file.path)
+            state["by_hash"].pop(file.md5)
+        except KeyError:
+            pass
 
     def rename_file(self, file: LocalFile, dst: str):
-        state = self.get() 
-        new_file = deepcopy(state["by_path"].pop(file.path))
-        new_file.path = dst
-        state["by_path"][dst] = new_file
+        state = self.get()
+        try:
+            new_file = deepcopy(state["by_path"].pop(file.path))
+            new_file.path = dst
+            state["by_path"][dst] = new_file
+        except KeyError:
+            pass
 
     def __sub__(self, prev):
         curr_state, prev_state = self.get(), prev.get()
@@ -170,3 +176,14 @@ class LocalFS(FileSystem):
         file = self._to_file(abs_path)
 
         self.get_state().add_file(file)
+
+    def copy(self, file: LocalFile, dst: str):
+        abs_dst = self._abs_path(dst)
+        copy(self._abs_path(file.path), abs_dst)
+
+        dst_file = deepcopy(file)
+        dst_file.path = dst
+        dst_file.creation_time = datetime.fromtimestamp(os.path.getctime(abs_dst))
+        dst_file.modified_date = datetime.fromtimestamp(os.path.getmtime(abs_dst))
+
+        self.get_state().add_file(dst_file)

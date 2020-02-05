@@ -86,15 +86,13 @@ class Erwin:
     def resolve_conflicts(self, master_deltas, slave_deltas):
         mc, sc = master_deltas.conflicts(slave_deltas)
         if mc or sc:
-            LOGGER.info(
-                f"Detected conflicts since last boot. " "Master: {mc}; Slave {sc}"
-            )
+            LOGGER.info(f"Detected conflicts since last boot. Master: {mc}; Slave {sc}")
 
         def move_conflict(master_file, slave_file):
             conflict_file_path = "conflict_" + file.path
-            self.slave_fs.move(slave_file, conflict_file_path)
+            self.slave_fs.copy(slave_file, conflict_file_path)
             LOGGER.info(
-                "Conflicting file on slave ranamed:"
+                "Conflicting file on slave copied: "
                 f"{master_file.path} -> {conflict_file_path}"
             )
 
@@ -124,25 +122,31 @@ class Erwin:
                     # master file over.
                     move_conflict(dst, slave_dst_file)
 
+    @staticmethod
     def apply_deltas(deltas, source, dest):
         source_fs, source_state = source
         dest_fs, dest_state = dest
 
         for file in deltas.removed:
-            dest_file = self.dest_fs.search(file.path)
-            if dest_file:
-                dest_state.remove_file(slave_file)
-                self.dest_fs.remove(slave_file)
+            dest_file = dest_fs.search(file.path)
 
+            if dest_file:
+                dest_fs.remove(dest_file)
+
+            dest_state.remove_file(file)
             source_state.remove_file(file)
+
             LOGGER.debug(f"Removed file {file.path}")
 
         for file in deltas.new:
             dest_file = dest_fs.search(file.path)
+
             if not (file @ dest_file):
                 dest_fs.write(source_fs.read(file), file)
+
             dest_state.add_file(dest_fs.search(file.path))
             source_state.add_file(file)
+
             LOGGER.debug(f"Created/modified {file.path}")
 
         for src, dst in deltas.renamed:
@@ -158,17 +162,15 @@ class Erwin:
                     dest_state.rename_file(dest_src_file, dst.path)
                 else:
                     dest_fs.remove(dest_src_file)
-                    dest_state.remove_file(dest_src_file)
-                    if not dest_dst_file:
-                        dest_fs.write(source_fs.read(dst), dst)
-                        dest_dst_file = dest_fs.search(dst.path)
-                        dest_state.add_file(dest_dst_file)
-            else:
-                if not dest_dst_file or not dst @ dest_dst_file:
-                    dest_fs.write(source_fs.read(dst), dst)
-                    dest_state.add_file(dest_fs.search(dst.path))
+
+            if not (dst @ dest_dst_file):
+                dest_fs.write(source_fs.read(dst), dst)
+
+            dest_state.add_file(dest_fs.search(dst.path))
+            dest_state.remove_file(dest_src_file)
 
             source_state.rename_file(src, dst.path)
+
             LOGGER.debug(f"Renamed {src.path} -> {dst.path}")
 
     def do_init(self):
@@ -211,7 +213,7 @@ class Erwin:
         self.resolve_conflicts(master_deltas, slave_deltas)
 
         try:
-            self.apply_deltas(
+            Erwin.apply_deltas(
                 master_deltas,
                 (self.master_fs, prev_master_state),
                 (self.slave_fs, prev_slave_state),
@@ -219,17 +221,24 @@ class Erwin:
             # Get new slave deltas and apply them to master. As a sanity check,
             # make sure there are no conflicts in this last step.
 
-            new_slave_deltas = self.slave_fs.get_state() - prev_slave_state
-            mc, sc = master_deltas.conflicts(new_slave_deltas)
-            if mc or sc:
-                raise RuntimeError("Conflicts after master delta merges.")
+            LOGGER.debug("Files in slave state after master deltas:")
+            for f in self.slave_fs.list():
+                print("* " + f.path)
 
-            self.apply_deltas(
+            new_slave_deltas = self.slave_fs.get_state() - prev_slave_state
+            LOGGER.debug(f"New deltas: {new_slave_deltas}")
+
+            if self.master_fs.get_state() - prev_master_state:
+                raise RuntimeError("Not all deltas applied correctly to master!")
+
+            if new_slave_deltas.removed or new_slave_deltas.renamed:
+                raise RuntimeError("Invalid deltas after master delta merged.")
+
+            Erwin.apply_deltas(
                 new_slave_deltas,
                 (self.slave_fs, prev_slave_state),
                 (self.master_fs, prev_master_state),
             )
-            
 
         finally:
             signal.signal(signal.SIGINT, old_int_handler)

@@ -38,7 +38,7 @@ class Delta:
 
     @property
     def renamed(self):
-                return sorted(self._renamed, key=lambda x: x[0].path)
+        return sorted(self._renamed, key=lambda x: x[0].path)
 
     @property
     def removed(self):
@@ -57,13 +57,12 @@ class Delta:
             other_new & (self_new | self_rem),
         )
 
+    def __bool__(self):
+        return bool(self._new or self._renamed or self._removed)
+
     def __str__(self):
-        new = "\n".join(
-            [f"+ {f.modified_date} {f.path}" for f in self.new]
-        )
-        removed = "\n".join(
-            [f"- {f.modified_date} {f.path}" for f in self.removed]
-        )
+        new = "\n".join([f"+ {f.modified_date} {f.path}" for f in self.new])
+        removed = "\n".join([f"- {f.modified_date} {f.path}" for f in self.removed])
         renamed = "\n".join([f"M {s.path} -> {d.path}" for s, d in self.renamed])
 
         return "\n".join([l for l in [new, removed, renamed] if l])
@@ -146,4 +145,12 @@ class FileSystem(ABC):
 
     @abstractmethod
     def remove(self, file: File):
+        pass
+
+    @abstractmethod
+    def move(self, file: File, dst: str):
+        pass
+
+    @abstractmethod
+    def copy(self, file: File, dst: str):
         pass
