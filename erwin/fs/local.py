@@ -62,22 +62,19 @@ class LocalFSState(State):
     def __sub__(self, prev):
         curr_state, prev_state = self.get(), prev.get()
 
+        curr_hashes = curr_state.get("by_hash", {})
+        prev_hashes = prev_state.get("by_hash", {})
+
         new = {
-            f
-            for _id, f in curr_state.get("by_hash", {}).items()
-            if _id not in prev_state.get("by_hash", {})
+            f for _id, f in curr_hashes.items() if not f @ prev_hashes.get(_id, None)
         }
         deleted = {
-            f
-            for _id, f in prev_state.get("by_hash", {}).items()
-            if _id not in curr_state.get("by_hash", {})
+            f for _id, f in prev_hashes.items() if not f @ curr_hashes.get(_id, None)
         }
         renamed = set()
 
         for _id in {
-            _id
-            for _id in prev_state.get("by_hash", {})
-            if _id in curr_state.get("by_hash", {})
+            _id for _id, f in prev_hashes.items() if f @ curr_hashes.get(_id, None)
         }:
             curr_file = curr_state["by_hash"][_id]
             prev_file = prev_state["by_hash"][_id]
@@ -120,9 +117,10 @@ class LocalFS(FileSystem):
 
     def _to_file(self, path):
         is_folder = os.path.isdir(path)
+        rel_path = os.path.relpath(path, start=self.root)
         return LocalFile(
-            path=os.path.relpath(path, start=self.root),
-            md5=_md5(path) if not is_folder else path,
+            path=rel_path,
+            md5=_md5(path) if not is_folder else rel_path,
             is_folder=is_folder,
             created_date=datetime.fromtimestamp(os.path.getctime(path)),
             modified_date=datetime.fromtimestamp(os.path.getmtime(path)),
@@ -133,7 +131,12 @@ class LocalFS(FileSystem):
         return self._state
 
     def makedirs(self, file):
-        os.makedirs(self._abs_path(file.path), exist_ok=True)
+        abs_path = self._abs_path(file.path)
+        os.makedirs(abs_path, exist_ok=True)
+
+        mtime = datetime.timestamp(file.modified_date)
+        os.utime(abs_path, (mtime, mtime))
+
         self.get_state().add_file(file)
 
     def read(self, file):
@@ -153,7 +156,10 @@ class LocalFS(FileSystem):
         return [f for _, f in self.get_state().get()["by_path"].items()]
 
     def remove(self, file):
-        os.remove(self._abs_path(file.path))
+        abs_path = self._abs_path(file.path)
+
+        os.remove(abs_path) if not file.is_folder else os.rmdir(abs_path)
+
         self.get_state().remove_file(file)
 
     def move(self, src: LocalFile, dst: str):

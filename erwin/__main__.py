@@ -142,7 +142,10 @@ class Erwin:
             dest_file = dest_fs.search(file.path)
 
             if not (file @ dest_file):
-                dest_fs.write(source_fs.read(file), file)
+                if file.is_folder:
+                    dest_fs.makedirs(file)
+                else:
+                    dest_fs.write(source_fs.read(file), file)
 
             dest_state.add_file(dest_fs.search(file.path))
             source_state.add_file(file)
@@ -164,7 +167,10 @@ class Erwin:
                     dest_fs.remove(dest_src_file)
 
             if not (dst @ dest_dst_file):
-                dest_fs.write(source_fs.read(dst), dst)
+                if dst.is_folder:
+                    dest_fs.makedirs(dst)
+                else:
+                    dest_fs.write(source_fs.read(dst), dst)
 
             dest_state.add_file(dest_fs.search(dst.path))
             dest_state.remove_file(dest_src_file)
@@ -221,9 +227,9 @@ class Erwin:
             # Get new slave deltas and apply them to master. As a sanity check,
             # make sure there are no conflicts in this last step.
 
-            LOGGER.debug("Files in slave state after master deltas:")
-            for f in self.slave_fs.list():
-                print("* " + f.path)
+            # LOGGER.debug("Files in slave state after master deltas:")
+            # for f in self.slave_fs.list():
+            #     print("* " + f.path)
 
             new_slave_deltas = self.slave_fs.get_state() - prev_slave_state
             LOGGER.debug(f"New deltas: {new_slave_deltas}")
@@ -231,8 +237,8 @@ class Erwin:
             if self.master_fs.get_state() - prev_master_state:
                 raise RuntimeError("Not all deltas applied correctly to master!")
 
-            if new_slave_deltas.removed or new_slave_deltas.renamed:
-                raise RuntimeError("Invalid deltas after master delta merged.")
+            # if new_slave_deltas.removed or new_slave_deltas.renamed:
+            #     raise RuntimeError("Invalid deltas after master delta merged.")
 
             Erwin.apply_deltas(
                 new_slave_deltas,

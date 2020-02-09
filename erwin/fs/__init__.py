@@ -7,7 +7,7 @@ class File:
         self.path = path
         self.md5 = md5
         self.is_folder = is_folder
-        self.created_date = created_date
+        # self.created_date = created_date
         self.modified_date = modified_date
 
     def __eq__(self, other):
@@ -19,7 +19,10 @@ class File:
     def __matmul__(self, other):
         if not other:
             return False
-        return self.md5 == other.md5 and self.modified_date == other.modified_date
+        return self.md5 == other.md5 and (
+            self.is_folder == other.is_folder
+            or self.modified_date == other.modified_date
+        )
 
 
 class Delta:
@@ -28,13 +31,9 @@ class Delta:
         self._renamed = renamed
         self._removed = removed
 
-    @staticmethod
-    def _sort_by_path(files):
-        return sorted(files, key=lambda file: file.path)
-
     @property
     def new(self):
-        return Delta._sort_by_path(self._new)
+        return sorted(self._new, key=lambda file: file.path)
 
     @property
     def renamed(self):
@@ -42,7 +41,9 @@ class Delta:
 
     @property
     def removed(self):
-        return Delta._sort_by_path(self._removed)
+        return sorted(
+            self._removed, key=lambda file: file.path, reverse=True
+        )
 
     def conflicts(self, other) -> tuple:
         self_new = {f.path for f in self.new} | {f.path for _, f in self.renamed}
