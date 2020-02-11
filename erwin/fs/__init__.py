@@ -2,27 +2,35 @@ from abc import ABC, abstractmethod
 import pickle
 
 
-class File:
-    def __init__(self, path, md5, is_folder, created_date, modified_date):
+class File(ABC):
+    def __init__(self, path, md5, is_folder, modified_date):
         self.path = path
         self.md5 = md5
         self.is_folder = is_folder
-        # self.created_date = created_date
         self.modified_date = modified_date
 
-    def __eq__(self, other):
-        common_attributes = [a for a in self.__dict__ if a in other.__dict__]
-        return {a: self.__dict__[a] for a in common_attributes} == {
-            a: other.__dict__[a] for a in common_attributes
-        }
+    @property
+    @abstractmethod
+    def id(self):
+        pass
 
-    def __matmul__(self, other):
+    def __eq__(self, other):
         if not other:
             return False
-        return self.md5 == other.md5 and (
-            self.is_folder == other.is_folder
-            or self.modified_date == other.modified_date
-        )
+        return self.id == other.id
+
+    def __and__(self, other):
+        if not other:
+            return False
+
+        for a in [a for a in self.__dict__ if a in other.__dict__]:
+            if self.__dict__[a] != other.__dict__[a]:
+                return False
+
+        return True
+
+    def __hash__(self):
+        return hash(self.id)
 
 
 class Delta:
@@ -41,9 +49,7 @@ class Delta:
 
     @property
     def removed(self):
-        return sorted(
-            self._removed, key=lambda file: file.path, reverse=True
-        )
+        return sorted(self._removed, key=lambda file: file.path, reverse=True)
 
     def conflicts(self, other) -> tuple:
         self_new = {f.path for f in self.new} | {f.path for _, f in self.renamed}
@@ -71,11 +77,14 @@ class Delta:
 
 class State(ABC):
     def __init__(self):
-        self._data = self.empty()
+        self._data = {"by_id": {}, "by_path": {}}
 
-    @abstractmethod
-    def empty(self):
-        pass
+    @classmethod
+    def from_file_list(cls, files):
+        state = cls()
+        for file in files:
+            state.add_file(file)
+        return state
 
     def set(self, state: dict):
         self._data = state
@@ -95,21 +104,51 @@ class State(ABC):
         with open(statefile, "wb") as fo:
             pickle.dump(self, fo)
 
-    @abstractmethod
     def add_file(self, file):
-        pass
+        self._data["by_id"][file.id] = self._data["by_path"][file.path] = file
 
-    @abstractmethod
     def remove_file(self, file):
-        pass
+        try:
+            del self._data["by_id"][file.id]
+            del self._data["by_path"][file.path]
+        except KeyError:
+            pass
 
-    @abstractmethod
-    def rename_file(self, file, dst):
-        pass
+    def move_file(self, file, dst):
+        try:
+            new_file = deepcopy(self._data["by_path"].pop(file.path))
+        except KeyError:
+            new_file = deepcopy(file)
 
-    @abstractmethod
-    def __sub__(self, other):
-        pass
+        new_file.path = dst
+
+        self._data["by_path"] = new_file
+
+    def __sub__(self, prev):
+        curr_state, prev_state = self.get(), prev.get()
+
+        curr_ids = curr_state.get("by_id", {})
+        prev_ids = prev_state.get("by_id", {})
+
+        new = {f for _id, f in curr_ids.items() if not f == prev_ids.get(_id, None)}
+        deleted = {f for _id, f in prev_ids.items() if not f == curr_ids.get(_id, None)}
+        renamed = set()
+
+        for _id in {i for i, f in prev_ids.items() if f == curr_ids.get(i, None)}:
+            curr_file = curr_state["by_id"][_id]
+            prev_file = prev_state["by_id"][_id]
+
+            if curr_file == prev_file:
+                if curr_file.path != prev_file.path:
+                    renamed.add((prev_file, curr_file))
+            else:
+                if curr_file.path == prev_file.path:
+                    new.add(curr_file)
+                else:
+                    deleted.add(prev_file)
+                    new.add(curr_file)
+
+        return Delta(new=new, renamed=renamed, removed=deleted)
 
 
 class FileSystem(ABC):

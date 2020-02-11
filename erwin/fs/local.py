@@ -18,92 +18,17 @@ def _md5(path):
 
 
 class LocalFile(File):
-    def __hash__(self):
-        return hash(self.path + str(self.md5))
+    def __init__(self, path, md5, is_folder, modified_date, created_date):
+        super().__init__(path, md5, is_folder, modified_date)
+        self.created_date = created_date
+
+    @property
+    def id(self):
+        return self.path if self.is_folder else (self.md5, self.modified_date)
 
 
 class LocalFSState(State):
-    @classmethod
-    def from_file_list(cls, files):
-        state = cls()
-        state.set(
-            {
-                "by_path": {f.path: f for f in files},
-                "by_hash": {f.md5: f for f in files},
-            }
-        )
-        return state
-
-    def empty(self):
-        return {"by_path": {}, "by_hash": {}}
-
-    def add_file(self, file):
-        state = self.get()
-        state["by_path"][file.path] = file
-        state["by_hash"][file.md5] = file
-
-    def remove_file(self, file):
-        state = self.get()
-        try:
-            state["by_path"].pop(file.path)
-            state["by_hash"].pop(file.md5)
-        except KeyError:
-            pass
-
-    def rename_file(self, file: LocalFile, dst: str):
-        state = self.get()
-        try:
-            new_file = deepcopy(state["by_path"].pop(file.path))
-            new_file.path = dst
-            state["by_path"][dst] = new_file
-        except KeyError:
-            pass
-
-    def __sub__(self, prev):
-        curr_state, prev_state = self.get(), prev.get()
-
-        curr_hashes = curr_state.get("by_hash", {})
-        prev_hashes = prev_state.get("by_hash", {})
-
-        new = {
-            f for _id, f in curr_hashes.items() if not f @ prev_hashes.get(_id, None)
-        }
-        deleted = {
-            f for _id, f in prev_hashes.items() if not f @ curr_hashes.get(_id, None)
-        }
-        renamed = set()
-
-        for _id in {
-            _id for _id, f in prev_hashes.items() if f @ curr_hashes.get(_id, None)
-        }:
-            curr_file = curr_state["by_hash"][_id]
-            prev_file = prev_state["by_hash"][_id]
-
-            if curr_file.is_folder != prev_file.is_folder:
-                deleted.add(prev_file)
-                new.add(curr_file)
-
-            elif not curr_file.is_folder and not prev_file.is_folder:
-                if (
-                    curr_file.modified_date == prev_file.modified_date
-                    and curr_file.path != prev_file.path
-                ):
-                    # Probably the file has been moved
-                    renamed.add((prev_file, curr_file))
-                elif (
-                    curr_file.path == prev_file.path
-                    and curr_file.modified_date != prev_file.modified_date
-                    and not curr_file.is_folder
-                    and not prev_file.is_folder
-                ):
-                    # File has been modified
-                    new.add(curr_file)
-                elif curr_file != prev_file:
-                    # Possibly a hash collision
-                    new.add(curr_file)
-                    deleted.add(prev_file)
-
-        return Delta(new=new, renamed=renamed, removed=deleted)
+    pass
 
 
 class LocalFS(FileSystem):
@@ -167,7 +92,7 @@ class LocalFS(FileSystem):
         move(self._abs_path(src.path), abs_dst)
 
         src.created_date = datetime.fromtimestamp(os.path.getctime(abs_dst))
-        self.get_state().rename_file(src, dst)
+        self.get_state().move_file(src, dst)
 
     def write(self, stream, file):
         abs_path = self._abs_path(file.path)
@@ -189,7 +114,7 @@ class LocalFS(FileSystem):
 
         dst_file = deepcopy(file)
         dst_file.path = dst
-        dst_file.creation_time = datetime.fromtimestamp(os.path.getctime(abs_dst))
+        dst_file.created_time = datetime.fromtimestamp(os.path.getctime(abs_dst))
         dst_file.modified_date = datetime.fromtimestamp(os.path.getmtime(abs_dst))
 
         self.get_state().add_file(dst_file)

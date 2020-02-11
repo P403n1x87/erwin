@@ -141,7 +141,7 @@ class Erwin:
         for file in deltas.new:
             dest_file = dest_fs.search(file.path)
 
-            if not (file @ dest_file):
+            if not (file & dest_file):
                 if file.is_folder:
                     dest_fs.makedirs(file)
                 else:
@@ -160,13 +160,13 @@ class Erwin:
             dest_dst_file = dest_fs.search(dst.path)
 
             if dest_src_file:
-                if src @ dest_src_file:
+                if src & dest_src_file:
                     dest_fs.move(src, dst.path)
-                    dest_state.rename_file(dest_src_file, dst.path)
+                    dest_state.move_file(dest_src_file, dst.path)
                 else:
                     dest_fs.remove(dest_src_file)
 
-            if not (dst @ dest_dst_file):
+            if not (dst & dest_dst_file):
                 if dst.is_folder:
                     dest_fs.makedirs(dst)
                 else:
@@ -175,7 +175,7 @@ class Erwin:
             dest_state.add_file(dest_fs.search(dst.path))
             dest_state.remove_file(dest_src_file)
 
-            source_state.rename_file(src, dst.path)
+            source_state.move_file(src, dst.path)
 
             LOGGER.debug(f"Renamed {src.path} -> {dst.path}")
 
