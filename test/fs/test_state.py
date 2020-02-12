@@ -1,14 +1,29 @@
-from test.fs import TestDir, TestFile, TestState
+from erwin.fs import State
+
+from test.fs import TestDir, TestFile
 
 
 def test_state():
-    s, t = TestState(), TestState()
+    s, t = State(), State()
 
-    s.add_file(TestFile("a", 1))
-    s.add_file(TestFile("b", 2))
-    s.add_file(TestFile("c", 3))
+    a1 = TestFile("a", 1)
+    b2 = TestFile("b", 2)
+    c3 = TestFile("c", 3)
 
-    t.add_file(TestFile("b", 1))
-    t.add_file(TestDir("z", 99))
+    b1 = TestFile("b", 1)
+    d4 = TestFile("d", 4)
+    z99 = TestFile("z", 99)
 
-    assert str(s - t) == "+ None a\n+ None c\n- None z\nM a -> b"
+    s.add_file(a1)
+    s.add_file(b2)
+    s.add_file(c3)
+
+    t.add_file(b1)
+    t.add_file(d4)
+    t.add_file(z99)
+
+    delta = s - t
+
+    assert set(delta.new) == {b2, c3}
+    assert set(delta.renamed) == {(b1, a1)}
+    assert set(delta.removed) == {d4, z99}

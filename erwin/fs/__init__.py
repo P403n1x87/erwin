@@ -79,6 +79,14 @@ class State(ABC):
     def __init__(self):
         self._data = {"by_id": {}, "by_path": {}}
 
+    def __getitem__(self, path):
+        return self._data["by_path"].get(path, None)
+
+    def __setitem__(self, path, file):
+        new_file = deepcopy(file)
+        new_file.path = path
+        self._data["by_id"][new_file.id] = self._data["by_path"][path] = new_file
+
     @classmethod
     def from_file_list(cls, files):
         state = cls()
