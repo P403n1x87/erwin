@@ -32,6 +32,9 @@ class File(ABC):
     def __hash__(self):
         return hash(self.id)
 
+    def __repr__(self):
+        return f"{type(self).__name__}({', '.join(f'{k}={v}' for k, v in self.__dict__.items())})"
+
 
 class Delta:
     def __init__(self, new: list, renamed: list, removed: list):
@@ -113,6 +116,19 @@ class State(ABC):
             pickle.dump(self, fo)
 
     def add_file(self, file):
+        # Check if we have the same file at a different path
+        prev_file = self._data["by_id"].get(file.id, None)
+        if prev_file and file.path != prev_file.path:
+            # Move it
+            self._data["by_path"][file.path] = file
+            return
+
+        # Check whether we have different files at the same path
+        prev_file = self._data["by_path"].get(file.path, None)
+        if prev_file and file.id != prev_file.id:
+            # Remove old file and add the new one
+            del self._data["by_id"][prev_file.id]
+
         self._data["by_id"][file.id] = self._data["by_path"][file.path] = file
 
     def remove_file(self, file):
@@ -125,12 +141,15 @@ class State(ABC):
     def move_file(self, file, dst):
         try:
             new_file = deepcopy(self._data["by_path"].pop(file.path))
+            del self._data["by_id"][file.id]
         except KeyError:
             new_file = deepcopy(file)
 
         new_file.path = dst
 
-        self._data["by_path"] = new_file
+        self._data["by_id"][new_file.id] = self._data["by_path"][
+            new_file.path
+        ] = new_file
 
     def __sub__(self, prev):
         curr_state, prev_state = self.get(), prev.get()
@@ -197,6 +216,10 @@ class FileSystem(ABC):
 
     @abstractmethod
     def move(self, file: File, dst: str):
+        pass
+
+    @abstractmethod
+    def conflict(self, file: File):
         pass
 
     @abstractmethod

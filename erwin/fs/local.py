@@ -1,8 +1,8 @@
 from copy import deepcopy
 from datetime import datetime
-import os
 import hashlib
-import os.path
+import os
+from time import time
 
 from shutil import copy, copyfileobj, move
 
@@ -18,9 +18,9 @@ def _md5(path):
 
 
 class LocalFile(File):
-    def __init__(self, path, md5, is_folder, modified_date, created_date):
-        super().__init__(path, md5, is_folder, modified_date)
-        self.created_date = created_date
+    # def __init__(self, path, md5, is_folder, modified_date, created_date):
+    #     super().__init__(path, md5, is_folder, modified_date)
+    #     self.created_date = created_date
 
     @property
     def id(self):
@@ -47,7 +47,7 @@ class LocalFS(FileSystem):
             path=rel_path,
             md5=_md5(path) if not is_folder else rel_path,
             is_folder=is_folder,
-            created_date=datetime.fromtimestamp(os.path.getctime(path)),
+            # created_date=datetime.fromtimestamp(os.path.getctime(path)),
             modified_date=datetime.fromtimestamp(os.path.getmtime(path)),
         )
 
@@ -91,7 +91,7 @@ class LocalFS(FileSystem):
         abs_dst = self._abs_path(dst)
         move(self._abs_path(src.path), abs_dst)
 
-        src.created_date = datetime.fromtimestamp(os.path.getctime(abs_dst))
+        # src.created_date = datetime.fromtimestamp(os.path.getctime(abs_dst))
         self.get_state().move_file(src, dst)
 
     def write(self, stream, file):
@@ -104,9 +104,13 @@ class LocalFS(FileSystem):
         mtime = datetime.timestamp(file.modified_date)
         os.utime(abs_path, (mtime, mtime))
 
-        file = self._to_file(abs_path)
+        self.get_state().add_file(self._to_file(abs_path))
 
-        self.get_state().add_file(file)
+    def conflict(self, file: LocalFile) -> str:
+        head, tail = os.path.split(file.path)
+        return os.path.join(
+            head, f"conflict_{hex(int(time())).replace('0x', '')}_{tail}"
+        )
 
     def copy(self, file: LocalFile, dst: str):
         abs_dst = self._abs_path(dst)

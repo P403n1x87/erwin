@@ -89,11 +89,11 @@ class Erwin:
             LOGGER.info(f"Detected conflicts since last boot. Master: {mc}; Slave {sc}")
 
         def move_conflict(master_file, slave_file):
-            conflict_file_path = "conflict_" + file.path
-            self.slave_fs.copy(slave_file, conflict_file_path)
+            conflict_path = self.slave_fs.conflict(slave_file)
+            self.slave_fs.copy(slave_file, conflict_path)
             LOGGER.info(
                 "Conflicting file on slave copied: "
-                f"{master_file.path} -> {conflict_file_path}"
+                f"{master_file.path} -> {conflict_path}"
             )
 
         for file in [f for f in master_deltas.removed if f.path in sc]:
@@ -147,10 +147,24 @@ class Erwin:
                 else:
                     dest_fs.write(source_fs.read(file), file)
 
+            dest_file = dest_fs.search(file.path)
             dest_state.add_file(dest_fs.search(file.path))
             source_state.add_file(file)
 
-            LOGGER.debug(f"Created/modified {file.path}")
+            if not file & dest_file:
+                print(
+                    {
+                        (k, file.__dict__[k], dest_file.__dict__[k])
+                        for k, v in file.__dict__.items()
+                        if k in dest_file.__dict__
+                        and file.__dict__[k] != dest_file.__dict__[k]
+                    }
+                )
+                raise RuntimeError(
+                    f"Source {file} and destination {dest_file} file mismatch"
+                )
+
+            LOGGER.debug(f"Created/modified {file}")
 
         for src, dst in deltas.renamed:
             # src file has been moved/removed
