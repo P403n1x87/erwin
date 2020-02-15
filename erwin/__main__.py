@@ -4,6 +4,7 @@ from enum import Enum, auto
 import os.path
 import signal
 from shutil import copyfile
+from time import sleep
 import yaml
 
 from erwin.fs import FileSystem
@@ -136,7 +137,7 @@ class Erwin:
             dest_state.remove_file(file)
             source_state.remove_file(file)
 
-            LOGGER.debug(f"Removed file {file.path}")
+            LOGGER.debug(f"Removed {file}")
 
         for file in deltas.new:
             dest_file = dest_fs.search(file.path)
@@ -146,25 +147,21 @@ class Erwin:
                     dest_fs.makedirs(file)
                 else:
                     dest_fs.write(source_fs.read(file), file)
+                    LOGGER.debug(f"Written {dest_file}")
 
-            dest_file = dest_fs.search(file.path)
-            dest_state.add_file(dest_fs.search(file.path))
+            while True:
+                dest_file = dest_fs.search(file.path)
+                if dest_file:
+                    break
+                sleep(0.001)
+
+            dest_state.add_file(dest_file)
             source_state.add_file(file)
 
             if not file & dest_file:
-                print(
-                    {
-                        (k, file.__dict__[k], dest_file.__dict__[k])
-                        for k, v in file.__dict__.items()
-                        if k in dest_file.__dict__
-                        and file.__dict__[k] != dest_file.__dict__[k]
-                    }
-                )
-                raise RuntimeError(
-                    f"Source {file} and destination {dest_file} file mismatch"
-                )
+                raise RuntimeError(f"Source and destination file mismatch")
 
-            LOGGER.debug(f"Created/modified {file}")
+            # LOGGER.debug(f"Created/modified {file}")
 
         for src, dst in deltas.renamed:
             # src file has been moved/removed
@@ -191,13 +188,18 @@ class Erwin:
 
             source_state.move_file(src, dst.path)
 
-            LOGGER.debug(f"Renamed {src.path} -> {dst.path}")
+            LOGGER.debug(f"Renamed {src} -> {dst}")
 
     def do_init(self):
+        def change_callback(event):
+            LOGGER.info(event)
+
         # self.master_fs = GoogleDriveFS(**self._config["master_fs"]["params"])
-        self.master_fs = LocalFS(root="/tmp/Downloads")
+        self.master_fs = LocalFS("/tmp/Downloads", change_callback)
         LOGGER.debug(f"Created Master FS of type {type(self.master_fs)}")
-        self.slave_fs = LocalFS(**self._config["slave_fs"]["params"])
+        self.slave_fs = LocalFS(
+            **self._config["slave_fs"]["params"], change_callback=change_callback
+        )
         LOGGER.debug(f"Created Slave FS of type {type(self.slave_fs)}")
 
         master_state_file = os.path.join(
@@ -238,6 +240,9 @@ class Erwin:
                 (self.master_fs, prev_master_state),
                 (self.slave_fs, prev_slave_state),
             )
+            if self.master_fs.get_state() - prev_master_state:
+                raise RuntimeError("Not all deltas applied correctly to master!")
+
             # Get new slave deltas and apply them to master. As a sanity check,
             # make sure there are no conflicts in this last step.
 
@@ -247,9 +252,6 @@ class Erwin:
 
             new_slave_deltas = self.slave_fs.get_state() - prev_slave_state
             LOGGER.debug(f"New deltas: {new_slave_deltas}")
-
-            if self.master_fs.get_state() - prev_master_state:
-                raise RuntimeError("Not all deltas applied correctly to master!")
 
             # if new_slave_deltas.removed or new_slave_deltas.renamed:
             #     raise RuntimeError("Invalid deltas after master delta merged.")
@@ -265,7 +267,6 @@ class Erwin:
             signal.signal(signal.SIGTERM, old_term_handler)
 
         save_prev_states()
-        # print(mc, sc)
 
     def do_sync(self):
         pass

@@ -179,12 +179,17 @@ class State(ABC):
 
 
 class FileSystem(ABC):
-    def __init__(self, root: File):
+    def __init__(self, root: File, change_callback: callable = None):
         self._root = root
+        self._change_cb = change_callback
 
     @property
     def root(self):
         return self._root
+
+    @property
+    def change_callback(self):
+        return self._change_cb
 
     @abstractmethod
     def get_state(self):

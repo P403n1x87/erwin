@@ -4,7 +4,7 @@ import os
 
 logging.basicConfig(
     level=getattr(logging, os.environ.get("ERWIN_DEBUG_LEVEL", "DEBUG").upper()),
-    format="[{name}] {asctime}.{msecs:03.0f} > {levelname:8} {message} "
+    format="{asctime}.{msecs:03.0f} [{name}] {levelname:8} {message} "
     "({filename}@{lineno}, in {funcName})",
     style="{",
     datefmt="%H:%M:%S",
@@ -12,3 +12,5 @@ logging.basicConfig(
 
 
 LOGGER = logging.getLogger("erwin")
+
+logging.getLogger("watchdog").setLevel(logging.WARNING)
