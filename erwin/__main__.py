@@ -233,14 +233,16 @@ class Erwin:
             LOGGER.info("Master FS state saved")
             prev_slave_state.save(slave_state_file)
             LOGGER.info("Slave FS state saved")
-            exit(1)
+            if signum:
+                LOGGER.warn(f"Received termination signal ({signum}). Shutting down...")
+                exit(signum)
 
         old_int_handler = signal.signal(signal.SIGINT, save_prev_states)
         old_term_handler = signal.signal(signal.SIGTERM, save_prev_states)
 
-        self.resolve_conflicts(master_deltas, slave_deltas)
-
         try:
+            self.resolve_conflicts(master_deltas, slave_deltas)
+
             Erwin.apply_deltas(
                 master_deltas,
                 (self.master_fs, prev_master_state),
@@ -249,18 +251,10 @@ class Erwin:
             if self.master_fs.get_state() - prev_master_state:
                 raise RuntimeError("Not all deltas applied correctly to master!")
 
-            # Get new slave deltas and apply them to master. As a sanity check,
-            # make sure there are no conflicts in this last step.
-
-            # LOGGER.debug("Files in slave state after master deltas:")
-            # for f in self.slave_fs.list():
-            #     print("* " + f.path)
-
+            # At this point we do not expect to have any conflicts left as we
+            # have resolved them at master before.
             new_slave_deltas = self.slave_fs.get_state() - prev_slave_state
             LOGGER.debug(f"New deltas: {new_slave_deltas}")
-
-            # if new_slave_deltas.removed or new_slave_deltas.renamed:
-            #     raise RuntimeError("Invalid deltas after master delta merged.")
 
             Erwin.apply_deltas(
                 new_slave_deltas,
@@ -268,26 +262,43 @@ class Erwin:
                 (self.master_fs, prev_master_state),
             )
 
-            def apply_changes(source_fs, dest_fs):
-                for delta in source_fs.get_changes():
-                    Erwin.apply_deltas(delta, (source_fs, None), (dest_fs, None))
+            def apply_changes(source, dest):
+                for delta in source[0].get_changes():
+                    Erwin.apply_deltas(delta, source, dest)
 
             watches = [
                 threading.Thread(
-                    target=apply_changes, args=(self.master_fs, self.slave_fs)
+                    target=apply_changes,
+                    args=(
+                        (self.master_fs, prev_master_state),
+                        (self.slave_fs, prev_slave_state),
+                    ),
                 ),
                 threading.Thread(
-                    target=apply_changes, args=(self.slave_fs, self.master_fs)
-                ).start(),
+                    target=apply_changes,
+                    args=(
+                        (self.slave_fs, prev_slave_state),
+                        (self.master_fs, prev_master_state),
+                    ),
+                ),
             ]
 
             for watch in watches:
+                watch.daemon = True  # Kill with main thread
                 watch.start()
 
             for watch in watches:
                 watch.join()
 
+        except Exception as e:
+            LOGGER.critical(
+                f"Emergency shutdown. Persisting the current FS states. Cause: {e}"
+            )
+            save_prev_states()
+            raise e
+
         finally:
+            LOGGER.debug("Restoring signal handlers")
             signal.signal(signal.SIGINT, old_int_handler)
             signal.signal(signal.SIGTERM, old_term_handler)
 

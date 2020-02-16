@@ -75,8 +75,8 @@ class LocalFSEventHandler(FileSystemEventHandler):
         self._fs._queue.put(Delta(removed=[file]))
 
     def on_moved(self, event):
-        file = (self._fs.search(self._get_file(event.src_path)),)
-        dst = (self._fs._rel_path(event.dest_path),)
+        file = self._get_file(event.src_path)
+        dst = self._fs._rel_path(event.dest_path)
         self._state.move_file(file, dst)
 
         dst_file = deepcopy(file)

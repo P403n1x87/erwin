@@ -56,6 +56,9 @@ class Delta:
         return sorted(self._removed, key=lambda file: file.path, reverse=True)
 
     def conflicts(self, other) -> tuple:
+        # TODO: This is not checking for file content mismatch so it is
+        # calculating path conflicts only. Enhance to return only those paths
+        # where files actually differ
         self_new = {f.path for f in self.new} | {f.path for _, f in self.renamed}
         self_rem = {f.path for f in self.removed} | {f.path for f, _ in self.renamed}
 
@@ -72,9 +75,9 @@ class Delta:
         return bool(self._new or self._renamed or self._removed)
 
     def __str__(self):
-        new = "\n".join([f"+ {f.modified_date} {f.path}" for f in self.new])
-        removed = "\n".join([f"- {f.modified_date} {f.path}" for f in self.removed])
-        renamed = "\n".join([f"M {s.path} -> {d.path}" for s, d in self.renamed])
+        new = "\n".join([f"+ {f}" for f in self.new])
+        removed = "\n".join([f"- {f}" for f in self.removed])
+        renamed = "\n".join([f"M {s} -> {d}" for s, d in self.renamed])
 
         return "\n".join([l for l in [new, removed, renamed] if l])
 
@@ -133,6 +136,9 @@ class State(ABC):
         self._data["by_id"][file.id] = self._data["by_path"][file.path] = file
 
     def remove_file(self, file):
+        if not file:
+            return
+
         try:
             del self._data["by_id"][file.id]
             del self._data["by_path"][file.path]
