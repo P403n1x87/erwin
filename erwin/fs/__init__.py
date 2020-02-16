@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from copy import deepcopy
 import pickle
 
 
@@ -37,10 +38,10 @@ class File(ABC):
 
 
 class Delta:
-    def __init__(self, new: list, renamed: list, removed: list):
-        self._new = new
-        self._renamed = renamed
-        self._removed = removed
+    def __init__(self, new: list = None, renamed: list = None, removed: list = None):
+        self._new = new or []
+        self._renamed = renamed or []
+        self._removed = removed or []
 
     @property
     def new(self):
@@ -179,9 +180,8 @@ class State(ABC):
 
 
 class FileSystem(ABC):
-    def __init__(self, root: File, change_callback: callable = None):
+    def __init__(self, root: File):
         self._root = root
-        self._change_cb = change_callback
 
     @property
     def root(self):

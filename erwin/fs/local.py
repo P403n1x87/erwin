@@ -2,6 +2,7 @@ from copy import deepcopy
 from datetime import datetime
 import hashlib
 import os
+from queue import Queue
 from time import time
 
 from shutil import copy, copyfileobj, move
@@ -43,11 +44,10 @@ class LocalFSState(State):
 
 
 class LocalFSEventHandler(FileSystemEventHandler):
-    def __init__(self, fs, cb):
+    def __init__(self, fs):
         super().__init__()
 
         self._fs = fs
-        self._cb = cb
         self._state = fs.get_state()
 
     def _get_file(self, abs_path):
@@ -62,7 +62,7 @@ class LocalFSEventHandler(FileSystemEventHandler):
         LOGGER.debug(f"Created {file}")
         self._state.add_file(file)
 
-        self._cb(event)
+        self._fs._queue.put(Delta(new=[file]))
 
     def on_modified(self, event):
         if event.is_directory:
@@ -70,28 +70,30 @@ class LocalFSEventHandler(FileSystemEventHandler):
         self.on_created(event)
 
     def on_deleted(self, event):
-        self._state.remove_file(self._get_file(event.src_path))
-        self._cb(event)
+        file = self._get_file(event.src_path)
+        self._state.remove_file(file)
+        self._fs._queue.put(Delta(removed=[file]))
 
     def on_moved(self, event):
-        self._state.move_file(
-            file=self._fs.search(self._get_file(event.src_path)),
-            dst=self._fs._rel_path(event.dest_path),
-        )
-        self._cb(event)
+        file = (self._fs.search(self._get_file(event.src_path)),)
+        dst = (self._fs._rel_path(event.dest_path),)
+        self._state.move_file(file, dst)
+
+        dst_file = deepcopy(file)
+        dst_file.path = dst
+        self._fs._queue.put(Delta(renamed=[(file, dst_file)]))
 
 
 class LocalFS(FileSystem):
-    def __init__(self, root, change_callback):
+    def __init__(self, root):
         # TODO: Validate root!
         abs_root = os.path.abspath(root)
-        super().__init__(abs_root, change_callback)
+        super().__init__(abs_root)
 
         self._state = {}
         self._watchdog = Observer()
-        self._watchdog.schedule(
-            LocalFSEventHandler(self, change_callback), abs_root, recursive=True
-        )
+        self._watchdog.schedule(LocalFSEventHandler(self), abs_root, recursive=True)
+        self._queue = Queue()
 
     def _abs_path(self, path):
         return os.path.abspath(os.path.join(self._root, path))
@@ -119,6 +121,10 @@ class LocalFS(FileSystem):
 
         return self._state
 
+    def get_changes(self):
+        while True:
+            yield self._queue.get()
+
     def makedirs(self, file):
         abs_path = self._abs_path(file.path)
 
@@ -127,8 +133,6 @@ class LocalFS(FileSystem):
 
             mtime = datetime.timestamp(file.modified_date)
             os.utime(abs_path, (mtime, mtime))
-
-        return self._to_file(abs_path)
 
     def read(self, file):
         return open(self._abs_path(file.path), "rb")
@@ -169,8 +173,6 @@ class LocalFS(FileSystem):
 
             mtime = datetime.timestamp(file.modified_date)
             os.utime(abs_path, (mtime, mtime))
-
-        return self._to_file(abs_path)
 
     def conflict(self, file: LocalFile) -> str:
         head, tail = os.path.split(file.path)

@@ -4,6 +4,7 @@ from enum import Enum, auto
 import os.path
 import signal
 from shutil import copyfile
+import threading
 from time import sleep
 import yaml
 
@@ -134,8 +135,10 @@ class Erwin:
             if dest_file:
                 dest_fs.remove(dest_file)
 
-            dest_state.remove_file(file)
-            source_state.remove_file(file)
+            if dest_state:
+                dest_state.remove_file(file)
+            if source_state:
+                source_state.remove_file(file)
 
             LOGGER.debug(f"Removed {file}")
 
@@ -147,19 +150,23 @@ class Erwin:
                     dest_fs.makedirs(file)
                 else:
                     dest_fs.write(source_fs.read(file), file)
-                    LOGGER.debug(f"Written {dest_file}")
+                    # Writing on a file requires two inotify events so we add
+                    # an extra acquire
+                while not (file & dest_file):
+                    sleep(0.001)
+                    dest_file = dest_fs.search(file.path)
 
-            while True:
-                dest_file = dest_fs.search(file.path)
-                if dest_file:
-                    break
-                sleep(0.001)
+            LOGGER.debug(f"Written {dest_file}")
 
-            dest_state.add_file(dest_file)
-            source_state.add_file(file)
+            if dest_state:
+                dest_state.add_file(dest_file)
+            if source_state:
+                source_state.add_file(file)
 
             if not file & dest_file:
-                raise RuntimeError(f"Source and destination file mismatch")
+                raise RuntimeError(
+                    f"Source {file} and destination {dest_file} mismatch"
+                )
 
             # LOGGER.debug(f"Created/modified {file}")
 
@@ -173,7 +180,8 @@ class Erwin:
             if dest_src_file:
                 if src & dest_src_file:
                     dest_fs.move(src, dst.path)
-                    dest_state.move_file(dest_src_file, dst.path)
+                    if dest_state:
+                        dest_state.move_file(dest_src_file, dst.path)
                 else:
                     dest_fs.remove(dest_src_file)
 
@@ -183,23 +191,20 @@ class Erwin:
                 else:
                     dest_fs.write(source_fs.read(dst), dst)
 
-            dest_state.add_file(dest_fs.search(dst.path))
-            dest_state.remove_file(dest_src_file)
+            if dest_state:
+                dest_state.add_file(dest_fs.search(dst.path))
+                dest_state.remove_file(dest_src_file)
 
-            source_state.move_file(src, dst.path)
+            if source_state:
+                source_state.move_file(src, dst.path)
 
             LOGGER.debug(f"Renamed {src} -> {dst}")
 
     def do_init(self):
-        def change_callback(event):
-            LOGGER.info(event)
-
         # self.master_fs = GoogleDriveFS(**self._config["master_fs"]["params"])
-        self.master_fs = LocalFS("/tmp/Downloads", change_callback)
+        self.master_fs = LocalFS("/tmp/Downloads")
         LOGGER.debug(f"Created Master FS of type {type(self.master_fs)}")
-        self.slave_fs = LocalFS(
-            **self._config["slave_fs"]["params"], change_callback=change_callback
-        )
+        self.slave_fs = LocalFS(**self._config["slave_fs"]["params"])
         LOGGER.debug(f"Created Slave FS of type {type(self.slave_fs)}")
 
         master_state_file = os.path.join(
@@ -228,6 +233,7 @@ class Erwin:
             LOGGER.info("Master FS state saved")
             prev_slave_state.save(slave_state_file)
             LOGGER.info("Slave FS state saved")
+            exit(1)
 
         old_int_handler = signal.signal(signal.SIGINT, save_prev_states)
         old_term_handler = signal.signal(signal.SIGTERM, save_prev_states)
@@ -261,6 +267,25 @@ class Erwin:
                 (self.slave_fs, prev_slave_state),
                 (self.master_fs, prev_master_state),
             )
+
+            def apply_changes(source_fs, dest_fs):
+                for delta in source_fs.get_changes():
+                    Erwin.apply_deltas(delta, (source_fs, None), (dest_fs, None))
+
+            watches = [
+                threading.Thread(
+                    target=apply_changes, args=(self.master_fs, self.slave_fs)
+                ),
+                threading.Thread(
+                    target=apply_changes, args=(self.slave_fs, self.master_fs)
+                ).start(),
+            ]
+
+            for watch in watches:
+                watch.start()
+
+            for watch in watches:
+                watch.join()
 
         finally:
             signal.signal(signal.SIGINT, old_int_handler)

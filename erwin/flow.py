@@ -1,4 +1,4 @@
-from threading import RLock
+from threading import Lock, RLock
 
 
 GLOBAL_LOCK = RLock()
