@@ -147,7 +147,7 @@ class Erwin:
 
             if not (file & dest_file):
                 if file.is_folder:
-                    dest_fs.makedirs(file)
+                    dest_fs.makedirs(file.path)
                 else:
                     dest_fs.write(source_fs.read(file), file)
                     # Writing on a file requires two inotify events so we add
@@ -187,7 +187,7 @@ class Erwin:
 
             if not (dst & dest_dst_file):
                 if dst.is_folder:
-                    dest_fs.makedirs(dst)
+                    dest_fs.makedirs(dst.path)
                 else:
                     dest_fs.write(source_fs.read(dst), dst)
 

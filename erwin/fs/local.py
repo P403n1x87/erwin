@@ -125,14 +125,12 @@ class LocalFS(FileSystem):
         while True:
             yield self._queue.get()
 
-    def makedirs(self, file):
-        abs_path = self._abs_path(file.path)
-
+    def makedirs(self, path):
         with GLOBAL_LOCK:
-            os.makedirs(abs_path, exist_ok=True)
+            os.makedirs(self._abs_path(path), exist_ok=True)
 
-            mtime = datetime.timestamp(file.modified_date)
-            os.utime(abs_path, (mtime, mtime))
+            # mtime = datetime.timestamp(file.modified_date)
+            # os.utime(abs_path, (mtime, mtime))
 
     def read(self, file):
         return open(self._abs_path(file.path), "rb")

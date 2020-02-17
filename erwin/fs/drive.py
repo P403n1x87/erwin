@@ -1,11 +1,12 @@
 from collections import defaultdict
 import datetime
+import mimetypes
 import pickle
 import os.path
 from pprint import pprint as pp
 
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -48,71 +49,26 @@ def _is_folder(file):
 
 
 class GoogleDriveFile(File):
-    def __init__(
-        self, path, md5, is_folder, created_date, modified_date, _id, mime_type
-    ):
-        super().__init__(path, md5, is_folder, created_date, modified_date)
-        self.id = _id
+    def __init__(self, path, md5, is_folder, modified_date, _id, mime_type, parents):
+        super().__init__(path, md5, is_folder, modified_date)
+        self._id = _id
         self.mime_type = mime_type
+        self.parents = parents
+
+    @property
+    def id(self):
+        return (
+            (self._id, self.md5, self.modified_date)
+            if not self.is_folder
+            else (self._id, self.path)
+        )
 
     def __hash__(self):
         return hash(self.id + str(self.md5))
 
 
 class GoogleDriveFSState(State):
-    @staticmethod
-    def from_file_list(files: list):
-        state = GoogleDriveFSState()
-        state.set(
-            {
-                "by_id": {f.id: f for f in files},
-                "by_path": {f.path: f for f in files},
-                "id_to_path": {f.id: f.path for f in files},
-            }
-        )
-        return state
-
-    def __sub__(self, prev):
-        curr_state, prev_state = self.get(), prev.get()
-
-        new = {
-            f
-            for _id, f in curr_state.get("by_id", {}).items()
-            if _id not in prev_state.get("by_id", {})
-        }
-        deleted = {
-            f
-            for _id, f in prev_state.get("by_id", {}).items()
-            if _id not in curr_state.get("by_id", {})
-        }
-        renamed = set()
-
-        for _id in {
-            _id
-            for _id in prev_state.get("by_id", {})
-            if _id in curr_state.get("by_id", {})
-        }:
-            curr_file = curr_state["by_id"][_id]
-            prev_file = prev_state["by_id"][_id]
-
-            if curr_file.created_date != prev_file.created_date:
-                # Possibly different files with ID clash
-                new.add(curr_file)
-                deleted.add(prev_file)
-            elif (
-                curr_file.modified_date != prev_file.modified_date
-                or curr_file.md5 != prev_file.md5
-            ) and curr_file.path == prev_file.path:
-                # File has been modified
-                new.add(curr_file)
-            elif (
-                curr_file.modified_date != prev_file.modified_date
-                or curr_file.path != prev_file.path
-            ) and curr_file.md5 == prev_file.md5:
-                # File has been moved
-                renamed.add((prev_file, curr_file))
-
-        return Delta(new=new, renamed=renamed, removed=deleted)
+    pass
 
 
 class GoogleDriveFS(FileSystem):
@@ -137,6 +93,11 @@ class GoogleDriveFS(FileSystem):
         # "driveId",
         # "spaces",
         # "headRevisionId",
+    ]
+
+    DIR_FIELDS = [
+        "id",
+        "name",
     ]
 
     def __init__(self, credentials, token):
@@ -177,14 +138,15 @@ class GoogleDriveFS(FileSystem):
             path=self._get_paths(df)[0].lstrip("/"),
             md5=df.get("md5Checksum", None),
             is_folder=_is_folder(df),
-            created_date=datetime.datetime.strptime(cdate, "%Y-%m-%dT%H:%M:%S.%fZ")
-            if cdate
-            else None,
+            # created_date=datetime.datetime.strptime(cdate, "%Y-%m-%dT%H:%M:%S.%fZ")
+            # if cdate
+            # else None,
             modified_date=datetime.datetime.strptime(mdate, "%Y-%m-%dT%H:%M:%S.%fZ")
             if mdate
             else None,
             _id=df["id"],
             mime_type=df["mimeType"],
+            parents=df.get("parents", []),
         )
 
     def _get_paths(self, file, partial_path="", path_list=None):
@@ -222,17 +184,14 @@ class GoogleDriveFS(FileSystem):
         return {"file": parent, "children": get_children(parent)}
 
     def get_state(self):
-        self._state = self._state or GoogleDriveFSState.from_file_list(
-            self.list(recursive=True)
-        )
+        if self._state:
+            return self._state
+
+        self._state = GoogleDriveFSState.from_file_list(self.list(recursive=True))
         return self._state
 
     def search(self, path):
-        state = self.get_state()
-        try:
-            return state["by_path"][path]
-        except KeyError:
-            raise FileNotFoundError(f"Path {path} not found in Google Drive.")
+        return self.get_state()[path]
 
     def list(self, recursive=False):
         parent = self.root
@@ -321,14 +280,100 @@ class GoogleDriveFS(FileSystem):
 
         return stream
 
-    def makedirs(self, file):
-        pass
+    def makedirs(self, path):
+        def splitdirs(path):
+            if path in ("", "/"):
+                return []
+            head, _ = os.path.split(path)
+            return splitdirs(head) + [path]
+
+        def makedir(name, parent):
+            file_metadata = {
+                "name": name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent._id],
+            }
+            return self._to_file(
+                self._drive.files().create(body=file_metadata).execute()
+            )
+
+        root, *dirs = splitdirs(path)
+        parent = self.search(root)
+        if not parent:
+            raise RuntimeError("Invalid path")
+        for p in dirs:
+            parent = self.search(p) or makedir(os.path.split(p)[1], parent)
 
     def remove(self, file):
-        pass
+        self._drive.files().update(fileId=file._id, body={"trashed": True}).execute()
 
     def write(self, stream, file):
+        current_file = self.search(file.path)
+        if current_file:  # A file exists at this location
+            if not file & current_file:  # File content doesn't match
+                self._drive.files().update(
+                    fileId=current_file._id,
+                    body={
+                        "name": os.path.basename(file.path),
+                        "modifiedTime": datetime.datetime.strftime(
+                            file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
+                        ),
+                    },
+                    media_body=MediaIoBaseUpload(
+                        stream,
+                        mimetype=mimetypes.guess_type(file.path)[0]
+                        or "application/octet-stream",
+                    ),
+                ).execute()
+        else:
+            # File does not exist, create it
+            self._drive.files().create(
+                body={
+                    "name": os.path.basename(file.path),
+                    "modifiedTime": datetime.datetime.strftime(
+                        file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
+                    ),
+                },
+                media_body=MediaIoBaseUpload(
+                    stream,
+                    mimetype=mimetypes.guess_type(file.path)[0]
+                    or "application/octet-stream",
+                ),
+            ).execute()
+
+    def conflict(self, file):
+        # Not required for a master FS.
         pass
+
+    def copy(self, file, dst):
+        head, tail = os.path.split(dst)
+        dst_dir = self.search(head)
+        if not dst_dir:
+            raise RuntimeError("Destination folder does not exist.")
+
+        self._drive.files().copy(
+            fileId=file._id,
+            body={
+                "name": tail,
+                "modifiedTime": datetime.datetime.strftime(
+                    file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
+                ),
+                "parents": [dst_dir._id],
+            },
+        ).execute()
+
+    def move(self, file, dst):
+        head, tail = os.path.split(dst)
+        dst_dir = self.search(head)
+        if not dst_dir:
+            raise RuntimeError("Destination folder does not exist.")
+
+        self._drive.files().update(
+            fileId=file._id,
+            body={"name": tail},
+            addParents=dst_dir._id,
+            removeParents=",".join(file.parents),
+        ).execute()
 
 
 def print_tree(tree, level=0):

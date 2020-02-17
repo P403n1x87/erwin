@@ -193,9 +193,9 @@ class FileSystem(ABC):
     def root(self):
         return self._root
 
-    @property
-    def change_callback(self):
-        return self._change_cb
+    @abstractmethod
+    def get_changes(self):
+        pass
 
     @abstractmethod
     def get_state(self):
@@ -218,7 +218,7 @@ class FileSystem(ABC):
         pass
 
     @abstractmethod
-    def makedirs(self, file: File):
+    def makedirs(self, path: str):
         pass
 
     @abstractmethod
