@@ -8,6 +8,7 @@ import threading
 from time import sleep
 import yaml
 
+from erwin.flow import atomic, DELTA_LOCK
 from erwin.fs import FileSystem
 from erwin.fs.drive import GoogleDriveFS, GoogleDriveFSState
 from erwin.fs.local import LocalFS, LocalFSState
@@ -103,9 +104,10 @@ class Erwin:
 
         for file in [f for f in master_deltas.new if f.path in sc]:
             slave_file = self.slave_fs.search(file.path)
-            if slave_file and file.path in sc:
+            if slave_file and file.path in sc and not file & slave_file:
                 # File is different, so slave file is conflict and we copy
                 # master file over.
+                print(file, slave_file)
                 move_conflict(file, slave_file)
 
         for src, dst in master_deltas.renamed:
@@ -125,6 +127,7 @@ class Erwin:
                     move_conflict(dst, slave_dst_file)
 
     @staticmethod
+    @atomic(DELTA_LOCK)
     def apply_deltas(deltas, source, dest):
         source_fs, source_state = source
         dest_fs, dest_state = dest
@@ -150,8 +153,6 @@ class Erwin:
                     dest_fs.makedirs(file.path)
                 else:
                     dest_fs.write(source_fs.read(file), file)
-                    # Writing on a file requires two inotify events so we add
-                    # an extra acquire
                 while not (file & dest_file):
                     sleep(0.001)
                     dest_file = dest_fs.search(file.path)
@@ -201,8 +202,8 @@ class Erwin:
             LOGGER.debug(f"Renamed {src} -> {dst}")
 
     def do_init(self):
-        # self.master_fs = GoogleDriveFS(**self._config["master_fs"]["params"])
-        self.master_fs = LocalFS("/tmp/Downloads")
+        self.master_fs = GoogleDriveFS(**self._config["master_fs"]["params"])
+        # self.master_fs = LocalFS("/tmp/Downloads")
         LOGGER.debug(f"Created Master FS of type {type(self.master_fs)}")
         self.slave_fs = LocalFS(**self._config["slave_fs"]["params"])
         LOGGER.debug(f"Created Slave FS of type {type(self.slave_fs)}")
@@ -265,6 +266,8 @@ class Erwin:
             def apply_changes(source, dest):
                 for delta in source[0].get_changes():
                     Erwin.apply_deltas(delta, source, dest)
+
+            LOGGER.debug("Starting watcher threads")
 
             watches = [
                 threading.Thread(

@@ -1,9 +1,13 @@
 from collections import defaultdict
 import datetime
+import io
 import mimetypes
 import pickle
 import os.path
 from pprint import pprint as pp
+from queue import Queue
+from threading import Thread
+from time import sleep
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -13,6 +17,7 @@ from google.auth.transport.requests import Request
 
 
 from erwin.fs import Delta, File, FileSystem, State
+from erwin.logging import LOGGER
 
 
 def _all_pages(method, token=None, **kwargs):
@@ -63,9 +68,6 @@ class GoogleDriveFile(File):
             else (self._id, self.path)
         )
 
-    def __hash__(self):
-        return hash(self.id + str(self.md5))
-
 
 class GoogleDriveFSState(State):
     pass
@@ -90,6 +92,7 @@ class GoogleDriveFS(FileSystem):
         "createdTime",
         "md5Checksum",
         "name",
+        "exportLinks",
         # "driveId",
         # "spaces",
         # "headRevisionId",
@@ -125,19 +128,21 @@ class GoogleDriveFS(FileSystem):
             with open(token, "wb") as t:
                 pickle.dump(creds, t)
 
-        self._drive = build("drive", "v3", credentials=creds)
+        self._drive = build("drive", "v3", credentials=creds, cache_discovery=False)
         self._droot = self._drive.files().get(fileId="root").execute()
 
         super().__init__(self._to_file(self._droot))
 
     def _to_file(self, df):
-        cdate = df.get("createdTime", None)
-        mdate = df.get("modifiedTime", None)
+        is_folder = _is_folder(df)
+
+        # cdate = df.get("createdTime", None)
+        mdate = df.get("modifiedTime", None) if not is_folder else None
 
         return GoogleDriveFile(
             path=self._get_paths(df)[0].lstrip("/"),
             md5=df.get("md5Checksum", None),
-            is_folder=_is_folder(df),
+            is_folder=is_folder,
             # created_date=datetime.datetime.strptime(cdate, "%Y-%m-%dT%H:%M:%S.%fZ")
             # if cdate
             # else None,
@@ -183,6 +188,40 @@ class GoogleDriveFS(FileSystem):
 
         return {"file": parent, "children": get_children(parent)}
 
+    def _get_changes(self):
+        start_token = self._changes_token or (
+            self._drive.changes()
+            .getStartPageToken()
+            .execute()
+            .get("startPageToken", None)
+        )
+        if not start_token:
+            return []
+
+        changes, self._changes_token = _all_pages(
+            self._drive.changes, token=start_token, includeRemoved=True,
+        )
+
+        return changes
+
+    def get_file(self, _id):
+        try:
+            return self._to_file(
+                self._drive.files()
+                .get(fileId=_id, fields=",".join(self.FILE_FIELDS))
+                .execute()
+            )
+        except HttpError:
+            return None
+
+    def get_changes(self):
+        while True:
+            LOGGER.debug("Getting Drive changes")
+            new_state = GoogleDriveFSState.from_file_list(self.list(recursive=True))
+            yield new_state - self._state
+            self._state = new_state
+            sleep(5)
+
     def get_state(self):
         if self._state:
             return self._state
@@ -206,11 +245,13 @@ class GoogleDriveFS(FileSystem):
             fields=f"nextPageToken, files({','.join(GoogleDriveFS.FILE_FIELDS)})",
         )
 
-        if not recursive:
-            return file_list
+        # if not recursive:
+        #     return file_list
 
         self._file_map = {f["id"]: f for f in file_list}
         self._file_map[self._droot["id"]] = self._droot
+
+        file_list = [f for f in file_list if not f.get("exportLinks", None)]
 
         sorted_list = []
         children_map = _children_map(file_list)
@@ -222,25 +263,13 @@ class GoogleDriveFS(FileSystem):
 
         add_children(self._droot)
 
-        return [self.root] + [self._to_file(file) for file in sorted_list]
+        return [self.root] + [
+            f
+            for f in [self._to_file(file) for file in sorted_list]
+            if f.is_folder or f.md5
+        ]
 
         # q="mimeType = 'application/vnd.google-apps.folder'",
-
-    def get_changes(self):
-        start_token = self._changes_token or (
-            self._drive.changes()
-            .getStartPageToken()
-            .execute()
-            .get("startPageToken", None)
-        )
-        if not start_token:
-            return []
-
-        changes, self._changes_token = _all_pages(
-            self._drive.changes, token=start_token, includeRemoved=True,
-        )
-
-        return changes
 
     def _download(self, request, buffer):
         downloader = MediaIoBaseDownload(buffer, request)
@@ -255,23 +284,26 @@ class GoogleDriveFS(FileSystem):
         return buffer
 
     def read(self, file: GoogleDriveFile):
+        LOGGER.info(f"Downloading {file}")
         try:
-            request = self._drive.files().get_media(fileId=file.id)
+            request = self._drive.files().get_media(fileId=file._id)
             stream = io.BytesIO()
             self._download(request, stream)
         except HttpError as e:
+            LOGGER.error(f"Error reading {file}. Cause: {e}")
             # Export a Google Doc file
             if e.resp.status == 403:
-                try:
-                    self._download(
-                        self._drive.files().export_media(
-                            fileId=file.id, mimeType=file.mime_type
-                        ),
-                        stream,
-                    )
-                except HttpError as f:
-                    if e.resp.status != 403:
-                        raise
+                pass
+                # try:
+                #     self._download(
+                #         self._drive.files().export_media(
+                #             fileId=file.id, mimeType=file.mime_type
+                #         ),
+                #         stream,
+                #     )
+                # except HttpError as f:
+                #     if e.resp.status != 403:
+                #         raise
 
         # print("Download %d%%." % int(status.progress() * 100), end="\r")
 

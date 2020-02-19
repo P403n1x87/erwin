@@ -106,10 +106,10 @@ class LocalFS(FileSystem):
         rel_path = self._rel_path(path)
         return LocalFile(
             path=rel_path,
-            md5=_md5(path) if not is_folder else rel_path,
+            md5=_md5(path) if not is_folder else None,
             is_folder=is_folder,
             # created_date=datetime.fromtimestamp(os.path.getctime(path)),
-            modified_date=datetime.fromtimestamp(os.path.getmtime(path)),
+            modified_date=datetime.fromtimestamp(os.path.getmtime(path)) if not is_folder else None,
         )
 
     def get_state(self):

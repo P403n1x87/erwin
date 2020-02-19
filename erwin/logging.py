@@ -14,3 +14,4 @@ logging.basicConfig(
 LOGGER = logging.getLogger("erwin")
 
 logging.getLogger("watchdog").setLevel(logging.WARNING)
+logging.getLogger("googleapiclient").setLevel(logging.WARNING)
