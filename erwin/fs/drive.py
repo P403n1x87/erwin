@@ -1,16 +1,18 @@
 from collections import defaultdict
 import datetime
+from httplib2 import Http
 import io
 import mimetypes
 import pickle
 import os.path
 from pprint import pprint as pp
 from queue import Queue
-from threading import Thread
+from threading import RLock, Thread
 from time import sleep
 
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from googleapiclient.http import HttpRequest, MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -18,6 +20,9 @@ from google.auth.transport.requests import Request
 
 from erwin.fs import Delta, File, FileSystem, State
 from erwin.logging import LOGGER
+
+
+STATE_LOCK = RLock()
 
 
 def _all_pages(method, token=None, **kwargs):
@@ -98,10 +103,7 @@ class GoogleDriveFS(FileSystem):
         # "headRevisionId",
     ]
 
-    DIR_FIELDS = [
-        "id",
-        "name",
-    ]
+    DIR_FIELDS = ["id", "name"]
 
     def __init__(self, credentials, token):
         self._drive = None
@@ -128,7 +130,21 @@ class GoogleDriveFS(FileSystem):
             with open(token, "wb") as t:
                 pickle.dump(creds, t)
 
-        self._drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+        def build_request(http, *args, **kwargs):
+            return
+
+        self._drive = build(
+            "drive",
+            "v3",
+            credentials=creds,
+            cache_discovery=False,
+            # Create a new instance of Http to make the Google API thread-safe
+            # See https://github.com/googleapis/google-api-python-client/blob/master/docs/thread_safety.md
+            requestBuilder=lambda _, *args, **kwargs: HttpRequest(
+                AuthorizedHttp(creds, http=Http()), *args, **kwargs
+            ),
+        )
+
         self._droot = self._drive.files().get(fileId="root").execute()
 
         super().__init__(self._to_file(self._droot))
@@ -199,7 +215,7 @@ class GoogleDriveFS(FileSystem):
             return []
 
         changes, self._changes_token = _all_pages(
-            self._drive.changes, token=start_token, includeRemoved=True,
+            self._drive.changes, token=start_token, includeRemoved=True
         )
 
         return changes
@@ -219,7 +235,8 @@ class GoogleDriveFS(FileSystem):
             LOGGER.debug("Getting Drive changes")
             new_state = GoogleDriveFSState.from_file_list(self.list(recursive=True))
             yield new_state - self._state
-            self._state = new_state
+            with STATE_LOCK:
+                self._state = new_state
             sleep(5)
 
     def get_state(self):
@@ -230,7 +247,8 @@ class GoogleDriveFS(FileSystem):
         return self._state
 
     def search(self, path):
-        return self.get_state()[path]
+        with STATE_LOCK:
+            return self.get_state()[path]
 
     def list(self, recursive=False):
         parent = self.root
@@ -325,9 +343,16 @@ class GoogleDriveFS(FileSystem):
                 "mimeType": "application/vnd.google-apps.folder",
                 "parents": [parent._id],
             }
-            return self._to_file(
-                self._drive.files().create(body=file_metadata).execute()
+            folder = self._to_file(
+                self._drive.files()
+                .create(body=file_metadata, fields=",".join(GoogleDriveFS.DIR_FIELDS))
+                .execute()
             )
+
+            with STATE_LOCK:
+                self.get_state().add_file(folder)
+
+            return folder
 
         root, *dirs = splitdirs(path)
         parent = self.search(root)
@@ -338,13 +363,39 @@ class GoogleDriveFS(FileSystem):
 
     def remove(self, file):
         self._drive.files().update(fileId=file._id, body={"trashed": True}).execute()
+        with STATE_LOCK:
+            self.get_state().remove_file(file)
 
     def write(self, stream, file):
         current_file = self.search(file.path)
         if current_file:  # A file exists at this location
             if not file & current_file:  # File content doesn't match
-                self._drive.files().update(
-                    fileId=current_file._id,
+                new_file = self._to_file(
+                    self._drive.files()
+                    .update(
+                        fileId=current_file._id,
+                        body={
+                            "name": os.path.basename(file.path),
+                            "modifiedTime": datetime.datetime.strftime(
+                                file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
+                            ),
+                        },
+                        media_body=MediaIoBaseUpload(
+                            stream,
+                            mimetype=mimetypes.guess_type(file.path)[0]
+                            or "application/octet-stream",
+                        ),
+                        fields=",".join(GoogleDriveFS.FILE_FIELDS),
+                    )
+                    .execute()
+                )
+            else:
+                new_file = current_file
+        else:
+            # File does not exist, create it
+            new_file = self._to_file(
+                self._drive.files()
+                .create(
                     body={
                         "name": os.path.basename(file.path),
                         "modifiedTime": datetime.datetime.strftime(
@@ -356,22 +407,14 @@ class GoogleDriveFS(FileSystem):
                         mimetype=mimetypes.guess_type(file.path)[0]
                         or "application/octet-stream",
                     ),
-                ).execute()
-        else:
-            # File does not exist, create it
-            self._drive.files().create(
-                body={
-                    "name": os.path.basename(file.path),
-                    "modifiedTime": datetime.datetime.strftime(
-                        file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
-                    ),
-                },
-                media_body=MediaIoBaseUpload(
-                    stream,
-                    mimetype=mimetypes.guess_type(file.path)[0]
-                    or "application/octet-stream",
-                ),
-            ).execute()
+                    fields=",".join(GoogleDriveFS.FILE_FIELDS),
+                )
+                .execute()
+            )
+
+        if new_file != current_file:
+            with STATE_LOCK:
+                self.get_state().add_file(new_file)
 
     def conflict(self, file):
         # Not required for a master FS.
@@ -383,16 +426,23 @@ class GoogleDriveFS(FileSystem):
         if not dst_dir:
             raise RuntimeError("Destination folder does not exist.")
 
-        self._drive.files().copy(
-            fileId=file._id,
-            body={
-                "name": tail,
-                "modifiedTime": datetime.datetime.strftime(
-                    file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
-                ),
-                "parents": [dst_dir._id],
-            },
-        ).execute()
+        copy = self._to_file(
+            self._drive.files()
+            .copy(
+                fileId=file._id,
+                body={
+                    "name": tail,
+                    "modifiedTime": datetime.datetime.strftime(
+                        file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
+                    ),
+                    "parents": [dst_dir._id],
+                },
+            )
+            .execute()
+        )
+
+        with STATE_LOCK:
+            self.get_state().add_file(copy)
 
     def move(self, file, dst):
         head, tail = os.path.split(dst)
@@ -400,12 +450,21 @@ class GoogleDriveFS(FileSystem):
         if not dst_dir:
             raise RuntimeError("Destination folder does not exist.")
 
-        self._drive.files().update(
-            fileId=file._id,
-            body={"name": tail},
-            addParents=dst_dir._id,
-            removeParents=",".join(file.parents),
-        ).execute()
+        dest_file = self._to_file(
+            self._drive.files()
+            .update(
+                fileId=file._id,
+                body={"name": tail},
+                addParents=dst_dir._id,
+                removeParents=",".join(file.parents),
+            )
+            .execute()
+        )
+
+        with STATE_LOCK:
+            state = self.get_state()
+            state.remove_file(file)
+            state.add_file(dest_file)
 
 
 def print_tree(tree, level=0):

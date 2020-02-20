@@ -86,8 +86,8 @@ class LocalFSEventHandler(FileSystemEventHandler):
 
 class LocalFS(FileSystem):
     def __init__(self, root):
-        # TODO: Validate root!
         abs_root = os.path.abspath(root)
+        os.makedirs(abs_root, exist_ok=True)
         super().__init__(abs_root)
 
         self._state = {}
@@ -109,7 +109,9 @@ class LocalFS(FileSystem):
             md5=_md5(path) if not is_folder else None,
             is_folder=is_folder,
             # created_date=datetime.fromtimestamp(os.path.getctime(path)),
-            modified_date=datetime.fromtimestamp(os.path.getmtime(path)) if not is_folder else None,
+            modified_date=datetime.fromtimestamp(round(os.path.getmtime(path), 3))
+            if not is_folder
+            else None,
         )
 
     def get_state(self):

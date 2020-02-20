@@ -1,5 +1,5 @@
 from appdirs import user_config_dir
-
+from queue import Queue
 from enum import Enum, auto
 import os.path
 import signal
@@ -25,6 +25,7 @@ class Erwin:
         self._first_boot = False
         self.master_fs = None
         self.slave_fs = None
+        self._queue = Queue()  # Queue of collected deltas
 
     def do_load_config(self):
         try:
@@ -127,7 +128,6 @@ class Erwin:
                     move_conflict(dst, slave_dst_file)
 
     @staticmethod
-    @atomic(DELTA_LOCK)
     def apply_deltas(deltas, source, dest):
         source_fs, source_state = source
         dest_fs, dest_state = dest
@@ -180,7 +180,7 @@ class Erwin:
 
             if dest_src_file:
                 if src & dest_src_file:
-                    dest_fs.move(src, dst.path)
+                    dest_fs.move(dest_src_file, dst.path)
                     if dest_state:
                         dest_state.move_file(dest_src_file, dst.path)
                 else:
@@ -255,7 +255,7 @@ class Erwin:
             # At this point we do not expect to have any conflicts left as we
             # have resolved them at master before.
             new_slave_deltas = self.slave_fs.get_state() - prev_slave_state
-            LOGGER.debug(f"New deltas: {new_slave_deltas}")
+            LOGGER.debug(f"New deltas:\n{new_slave_deltas}")
 
             Erwin.apply_deltas(
                 new_slave_deltas,
@@ -263,22 +263,24 @@ class Erwin:
                 (self.master_fs, prev_master_state),
             )
 
-            def apply_changes(source, dest):
+            def collect_deltas(source, dest):
                 for delta in source[0].get_changes():
-                    Erwin.apply_deltas(delta, source, dest)
+                    if delta:
+                        LOGGER.debug(f"Incremental delta received from {source[0]}")
+                        self._queue.put((delta, source, dest))
 
-            LOGGER.debug("Starting watcher threads")
+            LOGGER.debug("Starting incremental delta collectors")
 
             watches = [
                 threading.Thread(
-                    target=apply_changes,
+                    target=collect_deltas,
                     args=(
                         (self.master_fs, prev_master_state),
                         (self.slave_fs, prev_slave_state),
                     ),
                 ),
                 threading.Thread(
-                    target=apply_changes,
+                    target=collect_deltas,
                     args=(
                         (self.slave_fs, prev_slave_state),
                         (self.master_fs, prev_master_state),
@@ -289,6 +291,11 @@ class Erwin:
             for watch in watches:
                 watch.daemon = True  # Kill with main thread
                 watch.start()
+
+            while True:
+                delta, source, dest = self._queue.get()
+                Erwin.apply_deltas(delta, source, dest)
+                LOGGER.debug(f"Incremental delta applied to {dest[0]}")
 
             for watch in watches:
                 watch.join()

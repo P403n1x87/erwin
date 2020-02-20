@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from copy import deepcopy
 import pickle
 
@@ -66,10 +67,7 @@ class Delta:
 
         other_rem = {f.path for f in other.removed} | {f.path for f, _ in other.renamed}
 
-        return (
-            self_new & (other_new | other_rem),
-            other_new & (self_new | self_rem),
-        )
+        return (self_new & (other_new | other_rem), other_new & (self_new | self_rem))
 
     def __bool__(self):
         return bool(self._new or self._renamed or self._removed)
@@ -84,7 +82,7 @@ class Delta:
 
 class State(ABC):
     def __init__(self):
-        self._data = {"by_id": {}, "by_path": {}}
+        self._data = {"by_id": defaultdict(dict), "by_path": {}}
 
     def __getitem__(self, path):
         return self._data["by_path"].get(path, None)
@@ -92,7 +90,13 @@ class State(ABC):
     def __setitem__(self, path, file):
         new_file = deepcopy(file)
         new_file.path = path
-        self._data["by_id"][new_file.id] = self._data["by_path"][path] = new_file
+        self._data["by_id"][new_file.id][path] = self._data["by_path"][path] = new_file
+
+    def _del_by_id(self, file):
+        bucket = self._data["by_id"][file.id]
+        del bucket[file.path]
+        if not bucket:
+            del self._data["by_id"][file.id]
 
     @classmethod
     def from_file_list(cls, files):
@@ -120,27 +124,23 @@ class State(ABC):
             pickle.dump(self, fo)
 
     def add_file(self, file):
-        # Check if we have the same file at a different path
-        prev_file = self._data["by_id"].get(file.id, None)
-        if prev_file and file.path != prev_file.path:
-            # Move it
-            self._data["by_path"][file.path] = file
-            return
-
         # Check whether we have different files at the same path
         prev_file = self._data["by_path"].get(file.path, None)
-        if prev_file and file.id != prev_file.id:
+        if prev_file:
             # Remove old file and add the new one
-            del self._data["by_id"][prev_file.id]
+            self._del_by_id(prev_file)
 
-        self._data["by_id"][file.id] = self._data["by_path"][file.path] = file
+        self._data["by_id"][file.id][file.path] = self._data["by_path"][
+            file.path
+        ] = file
 
     def remove_file(self, file):
         if not file:
             return
 
         try:
-            del self._data["by_id"][file.id]
+            self._del_by_id(file)
+
             del self._data["by_path"][file.path]
         except KeyError:
             pass
@@ -148,39 +148,42 @@ class State(ABC):
     def move_file(self, file, dst):
         try:
             new_file = deepcopy(self._data["by_path"].pop(file.path))
-            del self._data["by_id"][file.id]
+            self._del_by_id(file)
         except KeyError:
             new_file = deepcopy(file)
 
         new_file.path = dst
 
-        self._data["by_id"][new_file.id] = self._data["by_path"][
+        self._data["by_id"][new_file.id][dst] = self._data["by_path"][
             new_file.path
         ] = new_file
 
     def __sub__(self, prev):
         curr_state, prev_state = self.get(), prev.get()
 
-        curr_ids = curr_state.get("by_id", {})
-        prev_ids = prev_state.get("by_id", {})
+        curr_ids = curr_state["by_id"]
+        prev_ids = prev_state["by_id"]
 
-        new = {f for _id, f in curr_ids.items() if not f == prev_ids.get(_id, None)}
-        deleted = {f for _id, f in prev_ids.items() if not f == curr_ids.get(_id, None)}
+        new = {
+            f for _id, l in curr_ids.items() for _, f in l.items() if not prev_ids[_id]
+        }
+        deleted = {
+            f for _id, l in prev_ids.items() for _, f in l.items() if not curr_ids[_id]
+        }
         renamed = set()
 
-        for _id in {i for i, f in prev_ids.items() if f == curr_ids.get(i, None)}:
-            curr_file = curr_state["by_id"][_id]
-            prev_file = prev_state["by_id"][_id]
+        for _id in {i for i in prev_ids if i in curr_ids}:
+            curr_files = curr_ids[_id]
+            prev_files = prev_ids[_id]
 
-            if curr_file == prev_file:
-                if curr_file.path != prev_file.path:
-                    renamed.add((prev_file, curr_file))
-            else:
-                if curr_file.path == prev_file.path:
-                    new.add(curr_file)
-                else:
-                    deleted.add(prev_file)
-                    new.add(curr_file)
+            new_files = [f for p, f in curr_files.items() if p not in prev_files]
+            deleted_files = [f for p, f in prev_files.items() if p not in curr_files]
+
+            while new_files and deleted_files:
+                renamed.add((deleted_files.pop(), new_files.pop()))
+
+            new |= set(new_files)
+            deleted |= set(deleted_files)
 
         return Delta(new=new, renamed=renamed, removed=deleted)
 
