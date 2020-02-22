@@ -1,29 +1,29 @@
 from erwin.fs import State
 
-from test.fs import TestDir, TestFile
+from test.fs import MockDir, MockFile
 
 
 def test_state():
     s, t = State(), State()
 
-    a1 = TestFile("a", 1)
-    b2 = TestFile("b", 2)
-    c3 = TestFile("c", 3)
+    a1 = MockFile(1)
+    b2 = MockFile(2)
+    c3 = MockFile(3)
 
-    b1 = TestFile("b", 1)
-    d4 = TestFile("d", 4)
-    z99 = TestFile("z", 99)
+    b1 = MockFile(1)
+    d4 = MockFile(4)
+    z99 = MockFile(99)
 
-    s.add_file(a1)
-    s.add_file(b2)
-    s.add_file(c3)
+    s.add(a1, "a")
+    s.add(b2, "b")
+    s.add(c3, "c")
 
-    t.add_file(b1)
-    t.add_file(d4)
-    t.add_file(z99)
+    t.add(b1, "b")
+    t.add(d4, "d")
+    t.add(z99, "z")
 
     delta = s - t
 
-    assert set(delta.new) == {b2, c3}
-    assert set(delta.renamed) == {(b1, a1)}
-    assert set(delta.removed) == {d4, z99}
+    assert set(delta.added) == {(b2, "b"), (c3, "c")}
+    assert set(delta.moved) == {("b", "a")}
+    assert set(delta.removed) == {"d", "z"}

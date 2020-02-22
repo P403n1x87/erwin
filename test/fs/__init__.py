@@ -2,49 +2,48 @@ from copy import deepcopy
 from erwin.fs import Delta, File, FileSystem, State
 
 
-class TestFile(File):
-    def __init__(self, path, md5):
-        super().__init__(path, md5, is_folder=False, modified_date=None)
+class MockFile(File):
+    def __init__(self, md5):
+        super().__init__(md5, is_folder=False, modified_date=None)
 
     @property
     def id(self):
-        return (self.md5, self.modified_date)
+        return self.md5, self.modified_date
 
-    def __repr__(self):
-        return f"TestFile({self.path}, {self.md5})"
 
-class TestDir(File):
-    def __init__(self, path, md5):
-        super().__init__(path, md5, is_folder=True, modified_date=None)
+class MockDir(File):
+    def __init__(self, md5):
+        super().__init__(md5, is_folder=True, modified_date=None)
 
     @property
     def id(self):
-        return self.path
+        return self.md5
 
 
-class TestFileSystem(FileSystem):
+class MockFileSystem(FileSystem):
     def __init__(self, root):
         super().__init__(root)
 
         self._state = TestState()
 
-    def get_state(self):
+    @property
+    def state(self):
         return self._state
 
-    def read(self, file):
-        return file.path
+    def read(self, path):
+        return self.state[path]
 
-    def write(self, stream, file):
-        self.get_state().add_file(file)
+    def write(self, stream, path, modified_date):
+        self.state[path] = stream
 
-    def list(self, recursive=False):
-        return self.get_state().list()
+    def list(self):
+        return self.state
 
     def search(self, path):
-        return self.get_state()[path]
+        return self.state[path]
 
-    def makedirs(self, file):
-        self.get_state().add_file(file)
+    def makedirs(self, path):
+        self.state[path] = MockDir(path)
 
-    def remove(self, file):
-        self.get_state().remove_file(file)
+    def remove(self, path):
+        self.state.remove(path)

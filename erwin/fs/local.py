@@ -16,7 +16,7 @@ from watchdog.observers.inotify_buffer import InotifyBuffer
 InotifyBuffer.delay = 0
 
 
-from erwin.flow import GLOBAL_LOCK
+from erwin.flow import atomic
 from erwin.fs import Delta, File, FileSystem, State
 from erwin.logging import LOGGER
 
@@ -30,13 +30,9 @@ def _md5(path):
 
 
 class LocalFile(File):
-    # def __init__(self, path, md5, is_folder, modified_date, created_date):
-    #     super().__init__(path, md5, is_folder, modified_date)
-    #     self.created_date = created_date
-
     @property
     def id(self):
-        return self.path if self.is_folder else (self.md5, self.modified_date)
+        return self.md5, self.modified_date
 
 
 class LocalFSState(State):
@@ -48,21 +44,21 @@ class LocalFSEventHandler(FileSystemEventHandler):
         super().__init__()
 
         self._fs = fs
-        self._state = fs.get_state()
+        self._state = fs.state
 
-    def _get_file(self, abs_path):
-        return self._fs.search(self._fs._rel_path(abs_path))
-
+    @atomic()
     def on_any_event(self, event):
-        with GLOBAL_LOCK:
-            pass
+        pass
 
     def on_created(self, event):
-        file = self._fs._to_file(event.src_path)
-        LOGGER.debug(f"Created {file}")
-        self._state.add_file(file)
+        abs_path = event.src_path
 
-        self._fs._queue.put(Delta(new=[file]))
+        file = self._fs._to_file(abs_path)
+        path = self._fs._rel_path(abs_path)
+
+        self._state.add(file, path)
+
+        self._fs._queue.put(Delta(added=[(file, path)]))
 
     def on_modified(self, event):
         if event.is_directory:
@@ -70,18 +66,16 @@ class LocalFSEventHandler(FileSystemEventHandler):
         self.on_created(event)
 
     def on_deleted(self, event):
-        file = self._get_file(event.src_path)
-        self._state.remove_file(file)
-        self._fs._queue.put(Delta(removed=[file]))
+        path = self._fs._rel_path(event.src_path)
+        self._state.remove(path)
+        self._fs._queue.put(Delta(removed=[path]))
 
     def on_moved(self, event):
-        file = self._get_file(event.src_path)
+        src = self._fs._rel_path(event.src_path)
         dst = self._fs._rel_path(event.dest_path)
-        self._state.move_file(file, dst)
+        self._state.move(src, dst)
 
-        dst_file = deepcopy(file)
-        dst_file.path = dst
-        self._fs._queue.put(Delta(renamed=[(file, dst_file)]))
+        self._fs._queue.put(Delta(moved=[(src, dst)]))
 
 
 class LocalFS(FileSystem):
@@ -101,20 +95,19 @@ class LocalFS(FileSystem):
     def _rel_path(self, path):
         return os.path.relpath(path, start=self.root)
 
-    def _to_file(self, path):
-        is_folder = os.path.isdir(path)
-        rel_path = self._rel_path(path)
+    def _to_file(self, abs_path):
+        is_folder = os.path.isdir(abs_path)
+        rel_path = self._rel_path(abs_path)
         return LocalFile(
-            path=rel_path,
-            md5=_md5(path) if not is_folder else None,
+            md5=_md5(abs_path) if not is_folder else rel_path,
             is_folder=is_folder,
-            # created_date=datetime.fromtimestamp(os.path.getctime(path)),
-            modified_date=datetime.fromtimestamp(round(os.path.getmtime(path), 3))
+            modified_date=datetime.fromtimestamp(round(os.path.getmtime(abs_path), 3))
             if not is_folder
             else None,
         )
 
-    def get_state(self):
+    @property
+    def state(self):
         if self._state:
             return self._state
 
@@ -127,67 +120,66 @@ class LocalFS(FileSystem):
         while True:
             yield self._queue.get()
 
+    @atomic()
     def makedirs(self, path):
-        with GLOBAL_LOCK:
-            os.makedirs(self._abs_path(path), exist_ok=True)
+        os.makedirs(self._abs_path(path), exist_ok=True)
 
-            # mtime = datetime.timestamp(file.modified_date)
-            # os.utime(abs_path, (mtime, mtime))
-
-    def read(self, file):
-        return open(self._abs_path(file.path), "rb")
+    def read(self, path):
+        return open(self._abs_path(path), "rb")
 
     def search(self, path):
-        return self.get_state()[path]
+        return self.state[path]
 
     def _list(self):
         return [
-            self._to_file(os.path.join(dp, f))
+            (self._rel_path(os.path.join(dp, f)), self._to_file(os.path.join(dp, f)))
             for dp, dn, filenames in os.walk(self.root)
             for f in dn + filenames
         ]
 
-    def list(self, recursive=False):
-        return [f for _, f in self.get_state().get()["by_path"].items()]
+    def list(self):
+        return iter(self.state)
 
-    def remove(self, file):
-        abs_path = self._abs_path(file.path)
+    @atomic()
+    def remove(self, path):
+        abs_path = self._abs_path(path)
+        try:
+            os.remove(abs_path)
+        except IsADirectoryError:
+            os.rmdir(abs_path)
+        except FileNotFoundError:
+            pass
 
-        with GLOBAL_LOCK:
-            os.remove(abs_path) if not file.is_folder else os.rmdir(abs_path)
+    @atomic()
+    def move(self, src: str, dst: str):
+        try:
+            move(self._abs_path(src), self._abs_path(dst))
+        except FileNotFoundError:
+            pass
 
-    def move(self, src: LocalFile, dst: str):
-        abs_dst = self._abs_path(dst)
-        with GLOBAL_LOCK:
-            move(self._abs_path(src.path), abs_dst)
+    @atomic()
+    def write(self, stream, path, modified_date):
+        abs_path = self._abs_path(path)
 
-        # src.created_date = datetime.fromtimestamp(os.path.getctime(abs_dst))
+        with open(abs_path, "wb") as fout:
+            copyfileobj(stream, fout)
+            stream.close()
 
-    def write(self, stream, file):
-        abs_path = self._abs_path(file.path)
+        mtime = datetime.timestamp(modified_date)
+        os.utime(abs_path, (mtime, mtime))
 
-        with GLOBAL_LOCK:
-            with open(abs_path, "wb") as fout:
-                copyfileobj(stream, fout)
-                stream.close()
-
-            mtime = datetime.timestamp(file.modified_date)
-            os.utime(abs_path, (mtime, mtime))
-
-    def conflict(self, file: LocalFile) -> str:
-        head, tail = os.path.split(file.path)
+    def conflict(self, path: str) -> str:
+        head, tail = os.path.split(path)
         return os.path.join(
             head, f"conflict_{hex(int(time())).replace('0x', '')}_{tail}"
         )
 
-    def copy(self, file: LocalFile, dst: str):
-        abs_dst = self._abs_path(dst)
-        copy(self._abs_path(file.path), abs_dst)
-
-        dst_file = deepcopy(file)
-        dst_file.path = dst
-        dst_file.created_time = datetime.fromtimestamp(os.path.getctime(abs_dst))
-        dst_file.modified_date = datetime.fromtimestamp(os.path.getmtime(abs_dst))
+    @atomic()
+    def copy(self, src: str, dst: str):
+        try:
+            copy(self._abs_path(src), self._abs_path(dst))
+        except FileNotFoundError:
+            pass
 
     def __del__(self):
         self._watchdog.stop()

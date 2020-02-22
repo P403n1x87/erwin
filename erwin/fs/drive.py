@@ -59,19 +59,15 @@ def _is_folder(file):
 
 
 class GoogleDriveFile(File):
-    def __init__(self, path, md5, is_folder, modified_date, _id, mime_type, parents):
-        super().__init__(path, md5, is_folder, modified_date)
+    def __init__(self, md5, is_folder, modified_date, _id, mime_type, parents):
+        super().__init__(md5, is_folder, modified_date)
         self._id = _id
         self.mime_type = mime_type
         self.parents = parents
 
     @property
     def id(self):
-        return (
-            (self._id, self.md5, self.modified_date)
-            if not self.is_folder
-            else (self._id, self.path)
-        )
+        return self._id, self.md5, self.modified_date
 
 
 class GoogleDriveFSState(State):
@@ -79,33 +75,46 @@ class GoogleDriveFSState(State):
 
 
 class GoogleDriveFS(FileSystem):
+    CLIENT_CONFIG = {
+        "installed": {
+            "client_id": "261427220234-n82d3mi8flk88u8s25l8lc8gau7ej6g9.apps.googleusercontent.com",
+            "project_id": "erwin-sync",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_secret": "3QwRSY0B0On8TIeCnsEN7X50",
+            "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"],
+        }
+    }
     # If modifying these scopes, delete the file token.pickle.
     SCOPES = [
         "https://www.googleapis.com/auth/drive.appdata",
         "https://www.googleapis.com/auth/drive",
     ]
 
-    FILE_FIELDS = [
-        "mimeType",
-        "trashed",
-        "id",
-        # "capabilities",
-        "parents",
-        "fullFileExtension",
-        "originalFilename",
-        "modifiedTime",
-        "createdTime",
-        "md5Checksum",
-        "name",
-        "exportLinks",
-        # "driveId",
-        # "spaces",
-        # "headRevisionId",
-    ]
+    FILE_FIELDS = ",".join(
+        [
+            "mimeType",
+            "trashed",
+            "id",
+            # "capabilities",
+            "parents",
+            "fullFileExtension",
+            "originalFilename",
+            "modifiedTime",
+            "createdTime",
+            "md5Checksum",
+            "name",
+            "exportLinks",
+            # "driveId",
+            # "spaces",
+            # "headRevisionId",
+        ]
+    )
 
-    DIR_FIELDS = ["id", "name"]
+    DIR_FIELDS = ",".join(["id", "name"])
 
-    def __init__(self, credentials, token):
+    def __init__(self, token):
         self._drive = None
         self._changes_token = None
         self._state = None
@@ -122,8 +131,8 @@ class GoogleDriveFS(FileSystem):
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    credentials, GoogleDriveFS.SCOPES
+                flow = InstalledAppFlow.from_client_config(
+                    GoogleDriveFS.CLIENT_CONFIG, GoogleDriveFS.SCOPES
                 )
                 creds = flow.run_local_server(port=0)
             # Save the credentials for the next run
@@ -152,16 +161,11 @@ class GoogleDriveFS(FileSystem):
     def _to_file(self, df):
         is_folder = _is_folder(df)
 
-        # cdate = df.get("createdTime", None)
         mdate = df.get("modifiedTime", None) if not is_folder else None
 
         return GoogleDriveFile(
-            path=self._get_paths(df)[0].lstrip("/"),
-            md5=df.get("md5Checksum", None),
+            md5=df.get("md5Checksum", None) if not is_folder else self._path(df),
             is_folder=is_folder,
-            # created_date=datetime.datetime.strptime(cdate, "%Y-%m-%dT%H:%M:%S.%fZ")
-            # if cdate
-            # else None,
             modified_date=datetime.datetime.strptime(mdate, "%Y-%m-%dT%H:%M:%S.%fZ")
             if mdate
             else None,
@@ -185,6 +189,9 @@ class GoogleDriveFS(FileSystem):
             self._get_paths(self._file_map[parent], partial_path, path_list)
 
         return path_list
+
+    def _path(self, df):
+        return self._get_paths(df)[0].lstrip("/")
 
     def list_shared_drives(self):
         return self._drive.drives().list().execute().get("drives", [])
@@ -233,38 +240,36 @@ class GoogleDriveFS(FileSystem):
     def get_changes(self):
         while True:
             LOGGER.debug("Getting Drive changes")
-            new_state = GoogleDriveFSState.from_file_list(self.list(recursive=True))
+            new_state = GoogleDriveFSState.from_file_list(self.list())
             yield new_state - self._state
             with STATE_LOCK:
                 self._state = new_state
             sleep(5)
 
-    def get_state(self):
+    @property
+    def state(self):
         if self._state:
             return self._state
 
-        self._state = GoogleDriveFSState.from_file_list(self.list(recursive=True))
+        self._state = GoogleDriveFSState.from_file_list(self.list())
         return self._state
 
     def search(self, path):
         with STATE_LOCK:
-            return self.get_state()[path]
+            return self.state[path]
 
-    def list(self, recursive=False):
+    def list(self):
         parent = self.root
 
         query = "trashed = false"
-        if not recursive:
-            query += f" and '{parent._id}' in parents"
+        # if not recursive:
+        #     query += f" and '{parent._id}' in parents"
 
         file_list, _ = _all_pages(
             self._drive.files,
             q=query,
-            fields=f"nextPageToken, files({','.join(GoogleDriveFS.FILE_FIELDS)})",
+            fields=f"nextPageToken, files({GoogleDriveFS.FILE_FIELDS})",
         )
-
-        # if not recursive:
-        #     return file_list
 
         self._file_map = {f["id"]: f for f in file_list}
         self._file_map[self._droot["id"]] = self._droot
@@ -281,9 +286,12 @@ class GoogleDriveFS(FileSystem):
 
         add_children(self._droot)
 
-        return [self.root] + [
-            f
-            for f in [self._to_file(file) for file in sorted_list]
+        # TODO return path, file pairs
+        return [(self._path(self._droot), self.root)] + [
+            (p, f)
+            for f, p in [
+                (self._to_file(file), self._path(file)) for file in sorted_list
+            ]
             if f.is_folder or f.md5
         ]
 
@@ -301,7 +309,11 @@ class GoogleDriveFS(FileSystem):
                 raise
         return buffer
 
-    def read(self, file: GoogleDriveFile):
+    def read(self, path):
+        file = self.search(path)
+        if not file:
+            raise FileNotFoundError(path)
+
         LOGGER.info(f"Downloading {file}")
         try:
             request = self._drive.files().get_media(fileId=file._id)
@@ -345,12 +357,12 @@ class GoogleDriveFS(FileSystem):
             }
             folder = self._to_file(
                 self._drive.files()
-                .create(body=file_metadata, fields=",".join(GoogleDriveFS.DIR_FIELDS))
+                .create(body=file_metadata, fields=GoogleDriveFS.DIR_FIELDS)
                 .execute()
             )
 
             with STATE_LOCK:
-                self.get_state().add_file(folder)
+                self.state.add(folder)
 
             return folder
 
@@ -361,66 +373,70 @@ class GoogleDriveFS(FileSystem):
         for p in dirs:
             parent = self.search(p) or makedir(os.path.split(p)[1], parent)
 
-    def remove(self, file):
+    def remove(self, path):
+        file = self.search(path)
+        if not file:
+            return
+
         self._drive.files().update(fileId=file._id, body={"trashed": True}).execute()
         with STATE_LOCK:
-            self.get_state().remove_file(file)
+            self.state.remove(path)
 
-    def write(self, stream, file):
-        current_file = self.search(file.path)
+    def write(self, stream, path, modified_date):
+        current_file = self.search(path)
         if current_file:  # A file exists at this location
-            if not file & current_file:  # File content doesn't match
-                new_file = self._to_file(
-                    self._drive.files()
-                    .update(
-                        fileId=current_file._id,
-                        body={
-                            "name": os.path.basename(file.path),
-                            "modifiedTime": datetime.datetime.strftime(
-                                file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
-                            ),
-                        },
-                        media_body=MediaIoBaseUpload(
-                            stream,
-                            mimetype=mimetypes.guess_type(file.path)[0]
-                            or "application/octet-stream",
+            new_file = self._to_file(
+                self._drive.files()
+                .update(
+                    fileId=current_file._id,
+                    body={
+                        "name": os.path.basename(path),
+                        "modifiedTime": datetime.datetime.strftime(
+                            modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
                         ),
-                        fields=",".join(GoogleDriveFS.FILE_FIELDS),
-                    )
-                    .execute()
+                    },
+                    media_body=MediaIoBaseUpload(
+                        stream,
+                        mimetype=mimetypes.guess_type(path)[0]
+                        or "application/octet-stream",
+                    ),
+                    fields=GoogleDriveFS.FILE_FIELDS,
                 )
-            else:
-                new_file = current_file
+                .execute()
+            )
         else:
             # File does not exist, create it
             new_file = self._to_file(
                 self._drive.files()
                 .create(
                     body={
-                        "name": os.path.basename(file.path),
+                        "name": os.path.basename(path),
                         "modifiedTime": datetime.datetime.strftime(
-                            file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
+                            modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
                         ),
                     },
                     media_body=MediaIoBaseUpload(
                         stream,
-                        mimetype=mimetypes.guess_type(file.path)[0]
+                        mimetype=mimetypes.guess_type(path)[0]
                         or "application/octet-stream",
                     ),
-                    fields=",".join(GoogleDriveFS.FILE_FIELDS),
+                    fields=GoogleDriveFS.FILE_FIELDS,
                 )
                 .execute()
             )
 
-        if new_file != current_file:
-            with STATE_LOCK:
-                self.get_state().add_file(new_file)
+        with STATE_LOCK:
+            self.state.add(new_file, path)
 
     def conflict(self, file):
         # Not required for a master FS.
         pass
 
-    def copy(self, file, dst):
+    def copy(self, src, dst):
+        file = self.search(src)
+        if not file:
+            return
+
         head, tail = os.path.split(dst)
         dst_dir = self.search(head)
         if not dst_dir:
@@ -433,18 +449,23 @@ class GoogleDriveFS(FileSystem):
                 body={
                     "name": tail,
                     "modifiedTime": datetime.datetime.strftime(
-                        file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
+                        modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
                     ),
                     "parents": [dst_dir._id],
                 },
+                fields=GoogleDriveFS.FILE_FIELDS,
             )
             .execute()
         )
 
         with STATE_LOCK:
-            self.get_state().add_file(copy)
+            self.state.add(copy, dst)
 
-    def move(self, file, dst):
+    def move(self, src, dst):
+        file = self.search(src)
+        if not file:
+            return
+
         head, tail = os.path.split(dst)
         dst_dir = self.search(head)
         if not dst_dir:
@@ -457,14 +478,15 @@ class GoogleDriveFS(FileSystem):
                 body={"name": tail},
                 addParents=dst_dir._id,
                 removeParents=",".join(file.parents),
+                fields=GoogleDriveFS.FILE_FIELDS,
             )
             .execute()
         )
 
         with STATE_LOCK:
-            state = self.get_state()
-            state.remove_file(file)
-            state.add_file(dest_file)
+            state = self.state
+            state.remove(src)
+            state.add(dest_file, dst)
 
 
 def print_tree(tree, level=0):
