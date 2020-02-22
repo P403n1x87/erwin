@@ -1,31 +1,26 @@
 from setuptools import setup, find_packages
-from os import path
 
-here = path.abspath(path.dirname(__file__))
-
-with open(path.join(here, "README.md"), encoding="utf-8") as f:
-    long_description = f.read()
 
 setup(
-    name="erwin",  # Required
-    version="0.1.0",  # Required
+    name="erwin",
+    version="0.1.1",
     description="File synchronisation daemon for cloud storage service providers",
-    long_description=long_description,  # Optional
-    long_description_content_type="text/markdown",  # Optional (see note above)
-    url="https://github.com/ph403n1x87/erwin",  # Optional
-    author="Gabriele N. Tornetta",  # Optional
-    author_email="phoenix1987@gmail.com",  # Optional
+    long_description=open("README.md").read(),
+    long_description_content_type="text/markdown",
+    url="https://github.com/ph403n1x87/erwin",
+    author="Gabriele N. Tornetta",
+    author_email="phoenix1987@gmail.com",
     classifiers=[
         "Development Status :: 3 - Alpha",
-        "Intended Audience :: Developers",
-        "Topic :: Software Development :: Build Tools",
-        "License :: OSI Approved :: MIT License",
+        "Intended Audience :: End User/Desktop",
+        "Topic :: Desktop Environment :: File Managers",
+        "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
         "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
     ],
-    keywords="file-syhchronization cloud-storage",  # Optional
-    packages=find_packages(where="erwin"),  # Required
+    keywords="file-syhchronization cloud-storage",
+    packages=find_packages(),
     python_requires=">=3.6",
     install_requires=[
         "ansimarkup",
@@ -35,10 +30,10 @@ setup(
         "google-api-python-client",
         "google-auth-httplib2",
         "google-auth-oauthlib",
-    ],  # Optional
-    extras_require={"dev": ["check-manifest"], "test": ["pytest"]},  # Optional
-    entry_points={"console_scripts": ["erwin=erwin.__main__:main"]},  # Optional
-    project_urls={  # Optional
+    ],
+    tests_require=["pytest"],
+    entry_points={"console_scripts": ["erwin=erwin.__main__:main"]},
+    project_urls={
         "Bug Reports": "https://github.com/ph403n1x87/erwin/issues",
         "Funding": "https://donate.pypi.org",
         "Say Thanks!": "http://saythanks.io/to/example",
