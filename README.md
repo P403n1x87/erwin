@@ -13,7 +13,7 @@ try him for the first time :).</p>
 
 <p align="center">
   <a href="https://travis-ci.org/P403n1x87/erwin">
-    <img src="https://travis-ci.org/P403n1x87/erwin.svg?branch=master"
+    <img src="https://travis-ci.com/P403n1x87/erwin.svg?token=fzW2yzQyjwys4tWf9anS&branch=master"
          alt="Travis CI Build Status">
   </a>
   <img src="https://img.shields.io/badge/version-0.1.1--beta-blue.svg"
