@@ -16,8 +16,8 @@ try him for the first time :).</p>
     <img src="https://travis-ci.org/P403n1x87/erwin.svg?branch=master"
          alt="Travis CI Build Status">
   </a>
-  <img src="https://img.shields.io/badge/version-0.1.0--beta-blue.svg"
-       alt="Version 1.0.0">
+  <img src="https://img.shields.io/badge/version-0.1.1--beta-blue.svg"
+       alt="Version 0.1.1-beta">
   <a href="https://github.com/P403n1x87/erwin/blob/master/LICENSE.md">
     <img src="https://img.shields.io/badge/license-GPLv3-ff69b4.svg"
          alt="LICENSE">
