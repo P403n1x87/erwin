@@ -6,9 +6,9 @@
 
 <h1 align="center">Meet Erwin</h1>
 
-<p align="center">Erwin likes to put stuff in boxes for safekeeping and synchronisation across devices,
-using Google Drive as cloud storage service. He's both useless and useful, until you
-try him for the first time :).</p>
+<p align="center">Erwin likes to put stuff in boxes for safekeeping and
+synchronisation across devices, using Google Drive as cloud storage service.
+He's both useless and useful, until you try him for the first time :).</p>
 
 
 <p align="center">
@@ -16,8 +16,8 @@ try him for the first time :).</p>
     <img src="https://travis-ci.org/P403n1x87/erwin.svg?branch=master"
          alt="Travis CI Build Status">
   </a>
-  <img src="https://img.shields.io/badge/version-0.1.1--beta-blue.svg"
-       alt="Version 0.1.1-beta">
+  <img src="https://img.shields.io/badge/version-0.1.2--beta-blue.svg"
+       alt="Version 0.1.2-beta">
   <a href="https://github.com/P403n1x87/erwin/blob/master/LICENSE.md">
     <img src="https://img.shields.io/badge/license-GPLv3-ff69b4.svg"
          alt="LICENSE">
@@ -28,6 +28,7 @@ try him for the first time :).</p>
   <a href="#synopsis"><b>Synopsis</b></a>&nbsp;&bull;
   <a href="#installation"><b>Installation</b></a>&nbsp;&bull;
   <a href="#usage"><b>Usage</b></a>&nbsp;&bull;
+  <a href="#why-erwin"><b>Why Erwin</b></a>&nbsp;&bull;
   <a href="#compatibility"><b>Compatibility</b></a>&nbsp;&bull;
   <a href="#contribute"><b>Contribute</b></a>
 </p>
@@ -46,14 +47,17 @@ try him for the first time :).</p>
 # Synopsis
 
 <p style="background:#FFCCCC;padding:12px;border-radius: 6px; border: solid 1px #FF8888;">
-⚠️ <b>WARNING</b> Erwin is still in beta and not extensively tested. Whilst your remote files are pretty safe, it cannot be completely excluded at the moment that local files won't be lost. Use at your own risk, and if you do, please always make backup copies of important files first!</p>
+⚠️ <b>WARNING</b> Erwin is still in beta and not extensively tested. Whilst your
+remote files are pretty safe, it cannot be completely excluded at the moment
+that local files won't be lost. Use at your own risk, and if you do, please
+always make backup copies of important files first!</p>
 
-Erwin is a cloud storage synchronisation service. Currently it works with Google
-Drive and allows you to have a mirror local copy of the files stored on your
+Erwin is a cloud storage synchronisation service. Currently, it works with Google
+Drive and allows you to have a local mirror copy of the files stored on your
 Google Drive account.
 
-There are some known restrictions at the moment. There is no support for Google
-Docs, which means that you won't see these files in your local copy.
+There are some known **restrictions** at the moment. There is no support for
+Google Docs, which means that you won't see these files in your local copy.
 Furthermore, Google Drive allows for multiple files to have the same name within
 the same directory. Most local file systems don't allow for a similar thing, so
 Erwin will work as expected for you only if you make sure never to use the same
@@ -70,7 +74,7 @@ pip install git+https://github.com/P403n1x87/erwin
 
 # Usage
 
-Once installed, Erwin can be launched simply with
+Once installed, Erwin can be launched with
 
 ~~~
 erwin
@@ -85,6 +89,15 @@ and automatic startup on login (see, e.g.,
 https://wiki.archlinux.org/index.php/Systemd/User for details).
 
 
+# Why Erwin
+
+Erwin is similar to other Google Drive solutions like
+[google-drive-ocamlfuse](https://github.com/astrada/google-drive-ocamlfuse), the
+main difference being that it behaves more like services such as Dropbox. Files
+are synchronised from the remote cloud storage to the local file system. This
+means that your files will be available even when you are offline. Any changes
+are pushed and pulled as soon as they are available and your system is connected
+to the public network.
 
 # Compatibility
 

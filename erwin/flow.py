@@ -2,7 +2,6 @@ from threading import RLock
 
 
 GLOBAL_LOCK = RLock()
-DELTA_LOCK = RLock()
 
 
 def atomic(lock=GLOBAL_LOCK):
