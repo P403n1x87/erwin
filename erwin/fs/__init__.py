@@ -107,7 +107,7 @@ class Delta:
             if dest_src_file:
                 if source_src_file & dest_src_file:
                     dest_fs.move(src, dst)
-                    dest_state.move_file(src, dst)
+                    dest_state.move(src, dst)
                 else:
                     dest_fs.remove(src)
 

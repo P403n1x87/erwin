@@ -25,6 +25,22 @@ from erwin.logging import LOGGER
 STATE_LOCK = RLock()
 
 
+def suppresserror(f):
+    def wrapper(*args, **kwargs):
+        try:
+            f(*args, **kwargs)
+        except HttpError as e:
+            if e.resp.status == 403:
+                LOGGER.warning(
+                    f"HTTP error suppressed after call to {f} with arguments "
+                    f"{args}, {kwargs}: {e}"
+                )
+            else:
+                raise e
+
+    return wrapper
+
+
 def _all_pages(method, token=None, **kwargs):
     retval = []
     token = token
@@ -86,7 +102,7 @@ class GoogleDriveFS(FileSystem):
             "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"],
         }
     }
-    # If modifying these scopes, delete the file token.pickle.
+
     SCOPES = [
         "https://www.googleapis.com/auth/drive.appdata",
         "https://www.googleapis.com/auth/drive",
@@ -120,13 +136,11 @@ class GoogleDriveFS(FileSystem):
         self._state = None
 
         creds = None
-        # The file token.pickle stores the user's access and refresh tokens, and is
-        # created automatically when the authorization flow completes for the first
-        # time.
+
         if os.path.exists(token):
             with open(token, "rb") as t:
                 creds = pickle.load(t)
-        # If there are no (valid) credentials available, let the user log in.
+
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
@@ -135,12 +149,9 @@ class GoogleDriveFS(FileSystem):
                     GoogleDriveFS.CLIENT_CONFIG, GoogleDriveFS.SCOPES
                 )
                 creds = flow.run_local_server(port=0)
-            # Save the credentials for the next run
+
             with open(token, "wb") as t:
                 pickle.dump(creds, t)
-
-        def build_request(http, *args, **kwargs):
-            return
 
         self._drive = build(
             "drive",
@@ -244,7 +255,7 @@ class GoogleDriveFS(FileSystem):
             yield new_state - self._state
             with STATE_LOCK:
                 self._state = new_state
-            sleep(5)
+            sleep(10)
 
     @property
     def state(self):
@@ -309,39 +320,42 @@ class GoogleDriveFS(FileSystem):
                 raise
         return buffer
 
+    @suppresserror
     def read(self, path):
         file = self.search(path)
         if not file:
             raise FileNotFoundError(path)
 
         LOGGER.info(f"Downloading {file}")
-        try:
-            request = self._drive.files().get_media(fileId=file._id)
-            stream = io.BytesIO()
-            self._download(request, stream)
-        except HttpError as e:
-            LOGGER.error(f"Error reading {file}. Cause: {e}")
-            # Export a Google Doc file
-            if e.resp.status == 403:
-                pass
-                # try:
-                #     self._download(
-                #         self._drive.files().export_media(
-                #             fileId=file.id, mimeType=file.mime_type
-                #         ),
-                #         stream,
-                #     )
-                # except HttpError as f:
-                #     if e.resp.status != 403:
-                #         raise
 
-        # print("Download %d%%." % int(status.progress() * 100), end="\r")
+        request = self._drive.files().get_media(fileId=file._id)
+        stream = io.BytesIO()
+        self._download(request, stream)
+
+        # TODO: This code should be fixed in order to support Google Docs
+        #
+        # except HttpError as e:
+        #     LOGGER.error(f"Error reading {file}. Cause: {e}")
+        #     # Export a Google Doc file
+        #     if e.resp.status == 403:
+        #         pass
+        #         try:
+        #             self._download(
+        #                 self._drive.files().export_media(
+        #                     fileId=file.id, mimeType=file.mime_type
+        #                 ),
+        #                 stream,
+        #             )
+        #         except HttpError as f:
+        #             if e.resp.status != 403:
+        #                 raise
 
         stream.flush()
         stream.seek(0)
 
         return stream
 
+    @suppresserror
     def makedirs(self, path):
         def splitdirs(path):
             if path in ("", "/"):
@@ -373,6 +387,7 @@ class GoogleDriveFS(FileSystem):
         for p in dirs:
             parent = self.search(p) or makedir(os.path.split(p)[1], parent)
 
+    @suppresserror
     def remove(self, path):
         file = self.search(path)
         if not file:
@@ -382,6 +397,7 @@ class GoogleDriveFS(FileSystem):
         with STATE_LOCK:
             self.state.remove(path)
 
+    @suppresserror
     def write(self, stream, path, modified_date):
         current_file = self.search(path)
         if current_file:  # A file exists at this location
@@ -432,6 +448,7 @@ class GoogleDriveFS(FileSystem):
         # Not required for a master FS.
         pass
 
+    @suppresserror
     def copy(self, src, dst):
         file = self.search(src)
         if not file:
@@ -461,6 +478,7 @@ class GoogleDriveFS(FileSystem):
         with STATE_LOCK:
             self.state.add(copy, dst)
 
+    @suppresserror
     def move(self, src, dst):
         file = self.search(src)
         if not file:
@@ -487,9 +505,3 @@ class GoogleDriveFS(FileSystem):
             state = self.state
             state.remove(src)
             state.add(dest_file, dst)
-
-
-def print_tree(tree, level=0):
-    print("  " * level + tree["file"]["name"])
-    for child in tree["children"]:
-        print_tree(child, level=level + 1)
