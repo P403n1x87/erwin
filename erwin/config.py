@@ -3,7 +3,7 @@ import os.path
 import signal
 import yaml
 
-from erwin.fs import State
+from erwin.fs import FSNotReady, State
 from erwin.logging import LOGGER
 
 
@@ -42,7 +42,7 @@ class ErwinConfiguration:
             for h, s in zip(self._orig_sig_handlers, self.SIGNALS):
                 signal.signal(s, h)
 
-        if exc_value:
+        if exc_value and exc_type not in (FSNotReady,):
             LOGGER.critical(
                 f"Emergency shutdown. Current FS states persisted. Cause: {exc_value}"
             )
@@ -88,11 +88,12 @@ class ErwinConfiguration:
             yaml.safe_dump(self._config, cf)
 
     def _save_states(self, signum=None, frame=None):
-        self._master_state.save(self._master_state_file)
-        LOGGER.info("Master FS state saved")
+        if self._master_state:
+            self._master_state.save(self._master_state_file)
+            LOGGER.info("Master FS state saved")
 
-        self._slave_state.save(self._slave_state_file)
-        LOGGER.info("Slave FS state saved")
+            self._slave_state.save(self._slave_state_file)
+            LOGGER.info("Slave FS state saved")
 
         if signum:
             LOGGER.warn(f"Received termination signal ({signum}). Shutting down...")

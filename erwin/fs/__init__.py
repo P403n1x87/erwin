@@ -4,6 +4,12 @@ from copy import deepcopy
 import pickle
 from time import sleep
 
+from erwin.logging import LOGGER
+
+
+class FSNotReady(Exception):
+    pass
+
 
 class File(ABC):
     def __init__(self, md5, is_folder, modified_date):
@@ -68,12 +74,14 @@ class Delta:
         dest_fs, dest_state = dest
 
         for path in self.removed:
+            LOGGER.debug(f"Removing file at {path} from {dest_fs}")
             dest_fs.remove(path)
 
             dest_state.remove(path)
             source_state.remove(path)
 
         for file, path in self.added:
+            LOGGER.debug(f"Adding file at {path} on {dest_fs}")
             dest_file = dest_fs.search(path)
 
             if not (file & dest_file):
@@ -81,6 +89,7 @@ class Delta:
                     dest_fs.makedirs(path)
                 else:
                     dest_fs.write(source_fs.read(path), path, file.modified_date)
+                LOGGER.debug("Waiting for destination file.")
                 while not (file & dest_file):
                     sleep(0.001)
                     dest_file = dest_fs.search(path)
@@ -89,11 +98,12 @@ class Delta:
             source_state.add(file, path)
 
         for src, dst in self.moved:
+            LOGGER.debug(f"Moving {src} -> {dst} on {dest_fs}")
             # src file has been moved/removed
             source_src_file = source_state[src]
             if not source_src_file:
                 raise RuntimeError(
-                    "Source file is unexpectedly missing from previous source FS state."
+                    f"Source file at {src} is unexpectedly missing from previous source FS state."
                 )
             source_dst_file = source_fs.search(dst)
             if not source_src_file:
@@ -120,7 +130,7 @@ class Delta:
                     )
                 while not (source_dst_file & dest_dst_file):
                     sleep(0.001)
-                    dest_dst_file = dest_fs.search(path)
+                    dest_dst_file = dest_fs.search(dst)
 
             dest_state.add(dest_dst_file, dst)
             dest_state.remove(src)

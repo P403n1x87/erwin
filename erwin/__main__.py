@@ -1,10 +1,12 @@
 from queue import Queue
 from shutil import copyfile
 import threading
+from time import sleep
 
 # from time import sleep
 
 from erwin.config import ErwinConfiguration
+from erwin.flow import backoff
 from erwin.fs.drive import GoogleDriveFS
 from erwin.fs.local import LocalFS
 from erwin.logging import LOGGER
@@ -51,10 +53,10 @@ class Erwin:
 
             # dst file has been created/modified
             master_dst_file = self.master_fs.search(dst)
-            if not master_src_file:
+            if not master_dst_file:
                 raise RuntimeError("Master file is unexpectedly missing.")
             slave_dst_file = self.slave_fs.search(dst)
-            if slave_dst_file and dst in sc and not (master_dst_file @ slave_dst_file):
+            if slave_dst_file and dst in sc and not (master_dst_file & slave_dst_file):
                 # File is different, so slave file is conflict and we copy
                 # master file over.
                 move_conflict(dst)
@@ -66,7 +68,7 @@ class Erwin:
                     LOGGER.debug(f"Incremental delta received from {source[0]}")
                     self._queue.put((delta, source, dest))
 
-        LOGGER.debug("Starting incremental delta collectors")
+        LOGGER.info("Watching for FS state changes")
 
         watches = [
             threading.Thread(
@@ -91,13 +93,18 @@ class Erwin:
         for watch in watches:
             watch.join()
 
+    @backoff(delay=5, ratio=1.618, cap=60)
     def start(self):
         with ErwinConfiguration() as config:
+            LOGGER.info("Erwin configuration loaded successfully.")
+
             # Create master and slave FSs
             self.master_fs = GoogleDriveFS(**config.get_master_fs_params())
+            LOGGER.info("Master FS is online.")
             LOGGER.debug(f"Created Master FS of type {type(self.master_fs)}")
 
             self.slave_fs = LocalFS(**config.get_slave_fs_params())
+            LOGGER.info("Slave FS is online.")
             LOGGER.debug(f"Created Slave FS of type {type(self.slave_fs)}")
 
             # Load the previous state
@@ -105,6 +112,8 @@ class Erwin:
 
             # Register signal handlers
             config.register_state_handler(prev_master_state, prev_slave_state)
+
+            LOGGER.info("Previous FS states loaded successfully.")
 
             # Compute deltas since last launch
             master_deltas = self.master_fs.state - prev_master_state
@@ -135,8 +144,7 @@ class Erwin:
 
 
 def main():
-    erwin = Erwin()
-    erwin.start()
+    Erwin().start()
 
 
 if __name__ == "__main__":

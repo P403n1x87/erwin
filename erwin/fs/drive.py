@@ -1,13 +1,13 @@
 from collections import defaultdict
 import datetime
-from httplib2 import Http
+from httplib2 import Http, ServerNotFoundError
 import io
 import mimetypes
 import pickle
 import os.path
 from pprint import pprint as pp
 from queue import Queue
-from threading import RLock, Thread
+from threading import Event, RLock, Thread
 from time import sleep
 
 from google_auth_httplib2 import AuthorizedHttp
@@ -18,17 +18,19 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
 
-from erwin.fs import Delta, File, FileSystem, State
+from erwin.fs import Delta, File, FileSystem, FSNotReady, State
 from erwin.logging import LOGGER
 
 
 STATE_LOCK = RLock()
+CONNECTED = Event()
 
 
 def suppresserror(f):
     def wrapper(*args, **kwargs):
         try:
-            f(*args, **kwargs)
+            CONNECTED.wait()
+            return f(*args, **kwargs)
         except HttpError as e:
             if e.resp.status == 403:
                 LOGGER.warning(
@@ -37,6 +39,14 @@ def suppresserror(f):
                 )
             else:
                 raise e
+        except ServerNotFoundError as e:
+            LOGGER.error(
+                f"Cannot call {f} with arguments {args}, {kwargs} at this time. "
+                f"Reason: {e}"
+            )
+            CONNECTED.clear()
+            CONNECTED.wait()
+            return suppresserror(f)(*args, **kwargs)
 
     return wrapper
 
@@ -71,7 +81,7 @@ def _children_map(object_list):
 
 
 def _is_folder(file):
-    return file.get("mimeType", None) == "application/vnd.google-apps.folder"
+    return file.get("mimeType", None) == GoogleDriveFS.FOLDER_MIMETYPE
 
 
 class GoogleDriveFile(File):
@@ -91,6 +101,9 @@ class GoogleDriveFSState(State):
 
 
 class GoogleDriveFS(FileSystem):
+    DEFAULT_MIMETYPE = "application/octet-stream"
+    FOLDER_MIMETYPE = "application/vnd.google-apps.folder"
+
     CLIENT_CONFIG = {
         "installed": {
             "client_id": "261427220234-n82d3mi8flk88u8s25l8lc8gau7ej6g9.apps.googleusercontent.com",
@@ -128,7 +141,7 @@ class GoogleDriveFS(FileSystem):
         ]
     )
 
-    DIR_FIELDS = ",".join(["id", "name"])
+    DIR_FIELDS = ",".join(["id", "name", "mimeType", "parents"])
 
     def __init__(self, token):
         self._drive = None
@@ -153,17 +166,22 @@ class GoogleDriveFS(FileSystem):
             with open(token, "wb") as t:
                 pickle.dump(creds, t)
 
-        self._drive = build(
-            "drive",
-            "v3",
-            credentials=creds,
-            cache_discovery=False,
-            # Create a new instance of Http to make the Google API thread-safe
-            # See https://github.com/googleapis/google-api-python-client/blob/master/docs/thread_safety.md
-            requestBuilder=lambda _, *args, **kwargs: HttpRequest(
-                AuthorizedHttp(creds, http=Http()), *args, **kwargs
-            ),
-        )
+        try:
+            self._drive = build(
+                "drive",
+                "v3",
+                credentials=creds,
+                cache_discovery=False,
+                # Create a new instance of Http to make the Google API thread-safe
+                # See https://github.com/googleapis/google-api-python-client/blob/master/docs/thread_safety.md
+                requestBuilder=lambda _, *args, **kwargs: HttpRequest(
+                    AuthorizedHttp(creds, http=Http()), *args, **kwargs
+                ),
+            )
+        except ServerNotFoundError as e:
+            raise FSNotReady("The Google Drive API is unreachable") from e
+
+        CONNECTED.set()
 
         self._droot = self._drive.files().get(fileId="root").execute()
 
@@ -181,7 +199,9 @@ class GoogleDriveFS(FileSystem):
             if mdate
             else None,
             _id=df["id"],
-            mime_type=df["mimeType"],
+            mime_type=self.FOLDER_MIMETYPE
+            if is_folder
+            else df.get("mimeType", self.DEFAULT_MIMETYPE),
             parents=df.get("parents", []),
         )
 
@@ -249,13 +269,27 @@ class GoogleDriveFS(FileSystem):
             return None
 
     def get_changes(self):
+        backoff = 10
         while True:
             LOGGER.debug("Getting Drive changes")
-            new_state = GoogleDriveFSState.from_file_list(self.list())
-            yield new_state - self._state
-            with STATE_LOCK:
-                self._state = new_state
-            sleep(10)
+            try:
+                new_state = GoogleDriveFSState.from_file_list(self.list())
+                backoff = 10
+                CONNECTED.set()
+
+                yield new_state - self._state
+
+                with STATE_LOCK:
+                    self._state = new_state
+
+            except ServerNotFoundError:
+                backoff *= 1.618
+                LOGGER.error(
+                    f"The Google Drive API is unreachable. Retrying in {int(backoff)} seconds."
+                )
+
+            finally:
+                sleep(backoff)
 
     @property
     def state(self):
@@ -363,10 +397,11 @@ class GoogleDriveFS(FileSystem):
             head, _ = os.path.split(path)
             return splitdirs(head) + [path]
 
-        def makedir(name, parent):
+        def makedir(path, parent):
+            _, name = os.path.split(p)
             file_metadata = {
                 "name": name,
-                "mimeType": "application/vnd.google-apps.folder",
+                "mimeType": self.FOLDER_MIMETYPE,
                 "parents": [parent._id],
             }
             folder = self._to_file(
@@ -376,7 +411,7 @@ class GoogleDriveFS(FileSystem):
             )
 
             with STATE_LOCK:
-                self.state.add(folder)
+                self.state.add(folder, path)
 
             return folder
 
@@ -385,7 +420,7 @@ class GoogleDriveFS(FileSystem):
         if not parent:
             raise RuntimeError("Invalid path")
         for p in dirs:
-            parent = self.search(p) or makedir(os.path.split(p)[1], parent)
+            parent = self.search(p) or makedir(p, parent)
 
     @suppresserror
     def remove(self, path):
@@ -413,28 +448,31 @@ class GoogleDriveFS(FileSystem):
                     },
                     media_body=MediaIoBaseUpload(
                         stream,
-                        mimetype=mimetypes.guess_type(path)[0]
-                        or "application/octet-stream",
+                        mimetype=mimetypes.guess_type(path)[0] or self.DEFAULT_MIMETYPE,
                     ),
                     fields=GoogleDriveFS.FILE_FIELDS,
                 )
                 .execute()
             )
-        else:
-            # File does not exist, create it
+        else:  # File does not exist, create it
+            folder, name = os.path.split(path)
+            parent = self.search(folder)
+            if not parent:
+                raise RuntimeError("Destination folder does not exist.")
+
             new_file = self._to_file(
                 self._drive.files()
                 .create(
                     body={
-                        "name": os.path.basename(path),
+                        "name": name,
                         "modifiedTime": datetime.datetime.strftime(
                             modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
                         ),
+                        "parents": [parent._id],
                     },
                     media_body=MediaIoBaseUpload(
                         stream,
-                        mimetype=mimetypes.guess_type(path)[0]
-                        or "application/octet-stream",
+                        mimetype=mimetypes.guess_type(name)[0] or self.DEFAULT_MIMETYPE,
                     ),
                     fields=GoogleDriveFS.FILE_FIELDS,
                 )
