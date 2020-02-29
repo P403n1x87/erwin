@@ -5,7 +5,7 @@ import os
 from queue import Queue
 from time import time
 
-from shutil import copy, copyfileobj, move
+from shutil import copy, copyfileobj, move, rmtree
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -146,7 +146,7 @@ class LocalFS(FileSystem):
         try:
             os.remove(abs_path)
         except IsADirectoryError:
-            os.rmdir(abs_path)
+            rmtree(abs_path)
         except FileNotFoundError:
             pass
 
@@ -186,3 +186,6 @@ class LocalFS(FileSystem):
         self._watchdog.join()
 
         super().__del__()
+
+    def __repr__(self):
+        return f"{type(self).__name__}({self._root})"

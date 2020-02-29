@@ -23,7 +23,7 @@ LOGGER = logging.getLogger("erwin")
 _handler = logging.StreamHandler()
 _handler.setFormatter(
     ColorFormatter(
-        "{asctime}.{msecs:03.0f} [{name}] <b>{levelname:18}</b> {message} "
+        "{asctime}.{msecs:03.0f} [{name}] <b>{levelname:18}</b> <yellow>{threadName:12}</yellow> {message} "
         "<fg 128,128,128>({filename}@{lineno}, in <b>{funcName}</b>)</fg 128,128,128>",
         style="{",
         datefmt="%H:%M:%S",

@@ -65,17 +65,21 @@ class Erwin:
         def collect_deltas(source, dest):
             for delta in source[0].get_changes():
                 if delta:
-                    LOGGER.debug(f"Incremental delta received from {source[0]}")
+                    LOGGER.debug(
+                        f"Incremental delta received from {source[0]}:\n{delta}"
+                    )
                     self._queue.put((delta, source, dest))
 
         LOGGER.info("Watching for FS state changes")
 
         watches = [
             threading.Thread(
+                name="Watch-MS",
                 target=collect_deltas,
                 args=((self.master_fs, master_state), (self.slave_fs, slave_state)),
             ),
             threading.Thread(
+                name="Watch-SM",
                 target=collect_deltas,
                 args=((self.slave_fs, slave_state), (self.master_fs, master_state)),
             ),

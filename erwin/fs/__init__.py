@@ -11,6 +11,16 @@ class FSNotReady(Exception):
     pass
 
 
+def wait(source_file, dest_fs, dst):
+    LOGGER.debug("Waiting for destination file.")
+    while True:
+        dest_file = dest_fs.search(dst)
+        if source_file & dest_file:
+            break
+        sleep(0.001)
+    return dest_file
+
+
 class File(ABC):
     def __init__(self, md5, is_folder, modified_date):
         self.md5 = md5
@@ -73,13 +83,6 @@ class Delta:
         source_fs, source_state = source
         dest_fs, dest_state = dest
 
-        for path in self.removed:
-            LOGGER.debug(f"Removing file at {path} from {dest_fs}")
-            dest_fs.remove(path)
-
-            dest_state.remove(path)
-            source_state.remove(path)
-
         for file, path in self.added:
             LOGGER.debug(f"Adding file at {path} on {dest_fs}")
             dest_file = dest_fs.search(path)
@@ -89,26 +92,23 @@ class Delta:
                     dest_fs.makedirs(path)
                 else:
                     dest_fs.write(source_fs.read(path), path, file.modified_date)
-                LOGGER.debug("Waiting for destination file.")
-                while not (file & dest_file):
-                    sleep(0.001)
-                    dest_file = dest_fs.search(path)
+                dest_file = wait(file, dest_fs, path)
 
             dest_state.add(dest_file, path)
             source_state.add(file, path)
 
         for src, dst in self.moved:
             LOGGER.debug(f"Moving {src} -> {dst} on {dest_fs}")
+
             # src file has been moved/removed
             source_src_file = source_state[src]
             if not source_src_file:
-                raise RuntimeError(
-                    f"Source file at {src} is unexpectedly missing from previous source FS state."
-                )
+                continue
+
             source_dst_file = source_fs.search(dst)
             if not source_src_file:
                 raise RuntimeError(
-                    "Destination file is unexpectedly missing from source FS."
+                    f"Destination file is unexpectedly missing from source {source_fs}."
                 )
 
             dest_src_file = dest_fs.search(src)
@@ -116,26 +116,38 @@ class Delta:
 
             if dest_src_file:
                 if source_src_file & dest_src_file:
+                    LOGGER.debug("Source files match at both end: moving.")
                     dest_fs.move(src, dst)
                     dest_state.move(src, dst)
+
+                    dest_dst_file = wait(source_dst_file, dest_fs, dst)
                 else:
+                    LOGGER.debug(
+                        "Source files don't match: deleting destination source."
+                    )
                     dest_fs.remove(src)
 
             if not (source_dst_file & dest_dst_file):
+                LOGGER.debug(f"Destination files don't match: (over)writing.")
                 if source_dst_file.is_folder:
                     dest_fs.makedirs(dst)
                 else:
                     dest_fs.write(
                         source_fs.read(dst), dst, source_dst_file.modified_date
                     )
-                while not (source_dst_file & dest_dst_file):
-                    sleep(0.001)
-                    dest_dst_file = dest_fs.search(dst)
+                dest_dst_file = wait(source_dst_file, dest_fs, dst)
 
             dest_state.add(dest_dst_file, dst)
             dest_state.remove(src)
 
             source_state.move(src, dst)
+
+        for path in self.removed:
+            LOGGER.debug(f"Removing file at {path} from {dest_fs}")
+            dest_fs.remove(path)
+
+            dest_state.remove(path)
+            source_state.remove(path)
 
 
 class State(ABC):

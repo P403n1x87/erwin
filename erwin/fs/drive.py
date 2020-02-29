@@ -360,7 +360,7 @@ class GoogleDriveFS(FileSystem):
         if not file:
             raise FileNotFoundError(path)
 
-        LOGGER.info(f"Downloading {file}")
+        LOGGER.info(f"Downloading {file} at {path}")
 
         request = self._drive.files().get_media(fileId=file._id)
         stream = io.BytesIO()
@@ -543,3 +543,6 @@ class GoogleDriveFS(FileSystem):
             state = self.state
             state.remove(src)
             state.add(dest_file, dst)
+
+    def __repr__(self):
+        return f"{type(self).__name__}({self._path(self._droot)})"
