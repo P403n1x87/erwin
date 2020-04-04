@@ -5,6 +5,7 @@ import os
 
 class ColorFormatter(logging.Formatter):
     ANSI_PALETTE = {
+        "TRACE": "<white>{}</white>",
         "DEBUG": "<cyan>{}</cyan>",
         "INFO": "<green>{}</green>",
         "WARNING": "<yellow>{}</yellow>",
@@ -20,6 +21,23 @@ class ColorFormatter(logging.Formatter):
 
 
 LOGGER = logging.getLogger("erwin")
+
+# Add TRACE level
+TRACE_LEVEL = logging.NOTSET + 1
+
+logging.addLevelName(TRACE_LEVEL, "TRACE")
+logging.TRACE = TRACE_LEVEL
+
+
+def _trace(self, message, *args, **kwargs):
+    if self.isEnabledFor(TRACE_LEVEL):
+        self._log(TRACE_LEVEL, message, args, **kwargs)
+
+
+type(LOGGER).trace = _trace
+
+
+# Configure formatter and handler
 _handler = logging.StreamHandler()
 _handler.setFormatter(
     ColorFormatter(
@@ -30,7 +48,12 @@ _handler.setFormatter(
     )
 )
 LOGGER.addHandler(_handler)
+
+
+# Set logger level
 LOGGER.setLevel(getattr(logging, os.environ.get("ERWIN_DEBUG_LEVEL", "INFO").upper()))
 
+
+# Suppress third-party libraries logging messages from INFO downwards
 logging.getLogger("watchdog").setLevel(logging.WARNING)
 logging.getLogger("googleapiclient").setLevel(logging.WARNING)

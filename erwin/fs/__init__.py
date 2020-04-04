@@ -21,6 +21,24 @@ def wait(source_file, dest_fs, dst):
     return dest_file
 
 
+def wait_dir(dest_fs, dst):
+    LOGGER.debug(f"Waiting for destination directory {dst} on {dest_fs}.")
+    while True:
+        dest_file = dest_fs.search(dst)
+        if dest_file:
+            break
+        sleep(0.001)
+    LOGGER.debug(f"Destination directory {dst} on {dest_fs} became available.")
+    return dest_file
+
+
+def wait_removed(dest_fs, path):
+    LOGGER.debug(f"Waiting for destination file {path} to be removed on {dest_fs}.")
+    while dest_fs.search(path):
+        sleep(0.001)
+    LOGGER.debug(f"Destination file {path} on {dest_fs} has been removed.")
+
+
 class File(ABC):
     def __init__(self, md5, is_folder, modified_date):
         self.md5 = md5
@@ -90,9 +108,12 @@ class Delta:
             if not (file & dest_file):
                 if file.is_folder:
                     dest_fs.makedirs(path)
+                    dest_file = wait_dir(dest_fs, path)
                 else:
-                    dest_fs.write(source_fs.read(path), path, file.modified_date)
-                dest_file = wait(file, dest_fs, path)
+                    stream = source_fs.read(path)
+                    if stream:
+                        dest_fs.write(stream, path, file.modified_date)
+                        dest_file = wait(file, dest_fs, path)
 
             dest_state.add(dest_file, path)
             source_state.add(file, path)
@@ -115,27 +136,37 @@ class Delta:
             dest_dst_file = dest_fs.search(dst)
 
             if dest_src_file:
-                if source_src_file & dest_src_file:
+                if source_src_file & dest_src_file or (
+                    source_src_file.is_folder and dest_src_file.is_folder
+                ):
                     LOGGER.debug("Source files match at both end: moving.")
                     dest_fs.move(src, dst)
                     dest_state.move(src, dst)
 
-                    dest_dst_file = wait(source_dst_file, dest_fs, dst)
+                    dest_dst_file = (
+                        wait(source_dst_file, dest_fs, dst)
+                        if not source_src_file.is_folder
+                        else wait_dir(dest_fs, dst)
+                    )
                 else:
                     LOGGER.debug(
                         "Source files don't match: deleting destination source."
                     )
                     dest_fs.remove(src)
+                    wait_removed(dest_fs, src)
 
-            if not (source_dst_file & dest_dst_file):
-                LOGGER.debug(f"Destination files don't match: (over)writing.")
+            if not source_dst_file.is_folder and not (source_dst_file & dest_dst_file):
+                LOGGER.debug("Destination files don't match: (over)writing.")
+                LOGGER.trace(source_dst_file)
+                LOGGER.trace(dest_dst_file)
                 if source_dst_file.is_folder:
                     dest_fs.makedirs(dst)
+                    dest_dst_file = wait_dir(dest_fs, dst)
                 else:
-                    dest_fs.write(
-                        source_fs.read(dst), dst, source_dst_file.modified_date
-                    )
-                dest_dst_file = wait(source_dst_file, dest_fs, dst)
+                    stream = source_fs.read(dst)
+                    if stream:
+                        dest_fs.write(stream, dst, source_dst_file.modified_date)
+                        dest_dst_file = wait(source_dst_file, dest_fs, dst)
 
             dest_state.add(dest_dst_file, dst)
             dest_state.remove(src)
@@ -145,6 +176,7 @@ class Delta:
         for path in self.removed:
             LOGGER.debug(f"Removing file at {path} from {dest_fs}")
             dest_fs.remove(path)
+            wait_removed(dest_fs, path)
 
             dest_state.remove(path)
             source_state.remove(path)
@@ -181,12 +213,14 @@ class State(ABC):
         try:
             with open(statefile, "rb") as fo:
                 return pickle.load(fo)
-        except FileNotFoundError:
+        except (FileNotFoundError, IOError, EOFError) as e:
+            LOGGER.error(f"Save state {statefile} not available. Reason: {e}.")
             return cls()
 
     def save(self, statefile):
         with open(statefile, "wb") as fo:
             pickle.dump(self, fo)
+            fo.flush()
 
     def add(self, file, path):
         self.remove(path)  # Remove any existing file at path
@@ -200,9 +234,16 @@ class State(ABC):
 
     def move(self, src, dst):
         try:
-            self.add(self._data["by_path"][src], dst)
+            if self[src].is_folder:
+                for p in [p for p, _ in self if p.startswith(src + "/")]:
+                    LOGGER.trace(f"Moving {p} -> {p.replace(src, dst, 1)}")
+                    self.add(self[p], p.replace(src, dst, 1))
+                    self.remove(p)
+            LOGGER.trace(f"Moving {src} -> {dst}")
+            self.add(self[src], dst)
             self.remove(src)
-        except KeyError:
+
+        except (KeyError, AttributeError):
             pass
 
     def __sub__(self, prev):
@@ -217,9 +258,11 @@ class State(ABC):
             for p, f in l.items()
             if not prev_ids[_id]
         }
+
         removed = {
             p for _id, l in prev_ids.items() for p, _ in l.items() if not curr_ids[_id]
         }
+
         moved = []
 
         for _id in {i for i in prev_ids if i in curr_ids}:
@@ -234,6 +277,10 @@ class State(ABC):
 
             added |= set(new_files)
             removed |= set(deleted_files)
+
+        # Files that are added and removed at the same path are files that have
+        # been modified. Therefore we simply add and avoid removing
+        removed -= {p for _, p in added}
 
         return Delta(
             added=sorted(added, key=lambda x: x[1]),

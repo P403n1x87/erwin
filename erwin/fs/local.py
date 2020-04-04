@@ -99,7 +99,7 @@ class LocalFS(FileSystem):
         is_folder = os.path.isdir(abs_path)
         rel_path = self._rel_path(abs_path)
         return LocalFile(
-            md5=_md5(abs_path) if not is_folder else rel_path,
+            md5=_md5(abs_path) if not is_folder else os.stat(abs_path).st_ino,
             is_folder=is_folder,
             modified_date=datetime.fromtimestamp(round(os.path.getmtime(abs_path), 3))
             if not is_folder
@@ -122,10 +122,15 @@ class LocalFS(FileSystem):
 
     @atomic()
     def makedirs(self, path):
+        LOGGER.debug(f"Creating local directory {path}")
         os.makedirs(self._abs_path(path), exist_ok=True)
 
     def read(self, path):
-        return open(self._abs_path(path), "rb")
+        try:
+            return open(self._abs_path(path), "rb")
+        except (FileNotFoundError, IOError):
+            LOGGER.error(f"Cannot read file {self._abs_path(path)} from {self}")
+            return None
 
     def search(self, path):
         return self.state[path]
@@ -142,6 +147,7 @@ class LocalFS(FileSystem):
 
     @atomic()
     def remove(self, path):
+        LOGGER.debug(f"Removing local file at {path}")
         abs_path = self._abs_path(path)
         try:
             os.remove(abs_path)
@@ -153,6 +159,7 @@ class LocalFS(FileSystem):
     @atomic()
     def move(self, src: str, dst: str):
         try:
+            LOGGER.debug(f"Moving local file {src} to {dst}")
             move(self._abs_path(src), self._abs_path(dst))
         except FileNotFoundError:
             pass
@@ -160,6 +167,10 @@ class LocalFS(FileSystem):
     @atomic()
     def write(self, stream, path, modified_date):
         abs_path = self._abs_path(path)
+
+        folder = os.path.dirname(path)
+        if not self.search(folder):
+            self.makedirs(folder)
 
         with open(abs_path, "wb") as fout:
             copyfileobj(stream, fout)

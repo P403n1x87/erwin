@@ -15,6 +15,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import HttpRequest, MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
 from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.exceptions import TransportError
 from google.auth.transport.requests import Request
 
 
@@ -25,6 +26,24 @@ from erwin.logging import LOGGER
 STATE_LOCK = RLock()
 CONNECTED = Event()
 
+_FILE_FIELDS = [
+    "mimeType",
+    "trashed",
+    "id",
+    # "capabilities",
+    "parents",
+    # "fullFileExtension",
+    # "originalFilename",
+    "modifiedTime",
+    # "createdTime",
+    "md5Checksum",
+    "name",
+    "exportLinks",
+    # "driveId",
+    # "spaces",
+    # "headRevisionId",
+]
+
 
 def suppresserror(f):
     def wrapper(*args, **kwargs):
@@ -32,13 +51,10 @@ def suppresserror(f):
             CONNECTED.wait()
             return f(*args, **kwargs)
         except HttpError as e:
-            if e.resp.status == 403:
-                LOGGER.warning(
-                    f"HTTP error suppressed after call to {f} with arguments "
-                    f"{args}, {kwargs}: {e}"
-                )
-            else:
-                raise e
+            LOGGER.warning(
+                f"HTTP error {e.resp.status} suppressed after call to {f} with arguments "
+                f"{args}, {kwargs}: {e}"
+            )
         except ServerNotFoundError as e:
             LOGGER.error(
                 f"Cannot call {f} with arguments {args}, {kwargs} at this time. "
@@ -121,52 +137,42 @@ class GoogleDriveFS(FileSystem):
         "https://www.googleapis.com/auth/drive",
     ]
 
-    FILE_FIELDS = ",".join(
+    CHANGES_FIELDS = ",".join(
         [
-            "mimeType",
-            "trashed",
-            "id",
-            # "capabilities",
-            "parents",
-            "fullFileExtension",
-            "originalFilename",
-            "modifiedTime",
-            "createdTime",
-            "md5Checksum",
-            "name",
-            "exportLinks",
-            # "driveId",
-            # "spaces",
-            # "headRevisionId",
+            "nextPageToken",
+            "newStartPageToken",
+            f"changes(fileId,time,removed,{','.join([f'file/{f}' for f in _FILE_FIELDS])})",
         ]
     )
 
     DIR_FIELDS = ",".join(["id", "name", "mimeType", "parents"])
+
+    FILE_FIELDS = ",".join(_FILE_FIELDS)
 
     def __init__(self, token):
         self._drive = None
         self._changes_token = None
         self._state = None
 
-        creds = None
-
-        if os.path.exists(token):
+        try:
             with open(token, "rb") as t:
                 creds = pickle.load(t)
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                flow = InstalledAppFlow.from_client_config(
-                    GoogleDriveFS.CLIENT_CONFIG, GoogleDriveFS.SCOPES
-                )
-                creds = flow.run_local_server(port=0)
-
-            with open(token, "wb") as t:
-                pickle.dump(creds, t)
+        except (FileNotFoundError, IOError):
+            creds = None
 
         try:
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    flow = InstalledAppFlow.from_client_config(
+                        GoogleDriveFS.CLIENT_CONFIG, GoogleDriveFS.SCOPES
+                    )
+                    creds = flow.run_local_server(port=0)
+
+                with open(token, "wb") as t:
+                    pickle.dump(creds, t)
+
             self._drive = build(
                 "drive",
                 "v3",
@@ -178,7 +184,7 @@ class GoogleDriveFS(FileSystem):
                     AuthorizedHttp(creds, http=Http()), *args, **kwargs
                 ),
             )
-        except ServerNotFoundError as e:
+        except (ServerNotFoundError, TransportError) as e:
             raise FSNotReady("The Google Drive API is unreachable") from e
 
         CONNECTED.set()
@@ -193,7 +199,7 @@ class GoogleDriveFS(FileSystem):
         mdate = df.get("modifiedTime", None) if not is_folder else None
 
         return GoogleDriveFile(
-            md5=df.get("md5Checksum", None) if not is_folder else self._path(df),
+            md5=df.get("md5Checksum", None) if not is_folder else df["id"],
             is_folder=is_folder,
             modified_date=datetime.datetime.strptime(mdate, "%Y-%m-%dT%H:%M:%S.%fZ")
             if mdate
@@ -228,7 +234,7 @@ class GoogleDriveFS(FileSystem):
         return self._drive.drives().list().execute().get("drives", [])
 
     def _list_all(self):
-        return _all_pages(self._drive.files, fields="*")[0]
+        return _all_pages(self._drive.files, fields=self.FILE_FIELDS)[0]
 
     def tree(self, parent=None):
         parent = parent or self.get_root()
@@ -242,6 +248,7 @@ class GoogleDriveFS(FileSystem):
 
         return {"file": parent, "children": get_children(parent)}
 
+    # @suppresserror
     def _get_changes(self):
         start_token = self._changes_token or (
             self._drive.changes()
@@ -250,37 +257,89 @@ class GoogleDriveFS(FileSystem):
             .get("startPageToken", None)
         )
         if not start_token:
-            return []
-
-        changes, self._changes_token = _all_pages(
-            self._drive.changes, token=start_token, includeRemoved=True
-        )
-
-        return changes
-
-    def get_file(self, _id):
-        try:
-            return self._to_file(
-                self._drive.files()
-                .get(fileId=_id, fields=",".join(self.FILE_FIELDS))
-                .execute()
-            )
-        except HttpError:
             return None
 
+        changes, self._changes_token = _all_pages(
+            self._drive.changes,
+            token=start_token,
+            includeRemoved=True,
+            fields=self.CHANGES_FIELDS,
+        )
+
+        added = []
+        moved = []
+        removed = []
+
+        for change in changes:
+            file_id = change["fileId"]
+            if not file_id or "file" not in change:
+                continue
+
+            dfile = change["file"]
+            if dfile.get("exportLinks", None):
+                # Ignore Google Docs
+                continue
+
+            new_file = self._to_file(dfile) if not dfile["trashed"] else None
+
+            old_dfile = self._file_map.get(file_id, None)
+            if old_dfile:
+                old_file = self._to_file(old_dfile)
+                if new_file:
+                    if old_file.parents == new_file.parents and old_file == new_file:
+                        continue
+
+                    if old_file.parents != new_file.parents and (
+                        old_file == new_file
+                        or old_file.is_folder
+                        and new_file.is_folder
+                    ):
+                        src, dst = self._path(old_dfile), self._path(dfile)
+                        moved.append((src, dst))
+                        self.state.move(src, dst)
+                    elif old_file.parents == new_file.parents and old_file != new_file:
+                        path = self._path(dfile)
+                        added.append((new_file, path))
+                        self.state.add(new_file, path)
+                    else:
+                        old_path = self._path(old_dfile)
+                        new_path = self._path(dfile)
+                        removed.append(old_path)
+                        added.append((new_file, new_path))
+                else:
+                    path = self._path(old_dfile)
+                    removed.append(path)
+                    self.state.remove(path)
+                    del self._file_map[file_id]
+
+            elif new_file:
+                path = self._path(dfile)
+                added.append((new_file, path))
+                self.state.add(new_file, path)
+
+            if not dfile["trashed"]:
+                self._file_map[file_id] = dfile
+
+        return Delta(added, moved, removed)
+
+    @suppresserror
+    def get_file(self, _id):
+        return self._to_file(
+            self._drive.files()
+            .get(fileId=_id, fields=",".join(self.FILE_FIELDS))
+            .execute()
+        )
+
     def get_changes(self):
-        backoff = 10
+        backoff = 5
         while True:
-            LOGGER.debug("Getting Drive changes")
+            LOGGER.trace(f"Getting Drive changes (backoff: {backoff})")
             try:
-                new_state = GoogleDriveFSState.from_file_list(self.list())
-                backoff = 10
-                CONNECTED.set()
-
-                yield new_state - self._state
-
                 with STATE_LOCK:
-                    self._state = new_state
+                    yield self._get_changes()
+
+                backoff = 5
+                CONNECTED.set()
 
             except ServerNotFoundError:
                 backoff *= 1.618
@@ -331,7 +390,6 @@ class GoogleDriveFS(FileSystem):
 
         add_children(self._droot)
 
-        # TODO return path, file pairs
         return [(self._path(self._droot), self.root)] + [
             (p, f)
             for f, p in [
@@ -339,8 +397,6 @@ class GoogleDriveFS(FileSystem):
             ]
             if f.is_folder or f.md5
         ]
-
-        # q="mimeType = 'application/vnd.google-apps.folder'",
 
     def _download(self, request, buffer):
         downloader = MediaIoBaseDownload(buffer, request)
@@ -434,6 +490,9 @@ class GoogleDriveFS(FileSystem):
 
     @suppresserror
     def write(self, stream, path, modified_date):
+        if not stream:
+            return
+
         current_file = self.search(path)
         if current_file:  # A file exists at this location
             new_file = self._to_file(

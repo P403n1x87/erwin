@@ -21,13 +21,15 @@ class Erwin:
     def resolve_conflicts(self, master_deltas, slave_deltas):
         mc, sc = master_deltas & slave_deltas
         if mc or sc:
-            LOGGER.info(f"Detected conflicts since last boot. Master: {mc}; Slave {sc}")
+            LOGGER.debug(
+                f"Detected possible conflicts since last boot. Master: {mc}; Slave {sc}"
+            )
 
         def move_conflict(path):
             conflict_path = self.slave_fs.conflict(path)
             self.slave_fs.copy(path, conflict_path)
             LOGGER.info(
-                "Conflicting file on slave copied: " f"{path} -> {conflict_path}"
+                f"Conflicting file on slave backed up: {path} -> {conflict_path}"
             )
 
         for path in [p for p in master_deltas.removed if p in sc]:
@@ -37,8 +39,7 @@ class Erwin:
             master_file = self.slave_fs.search(path)
             if not master_file:
                 raise RuntimeError("Master file is unexpectedly missing.")
-            slave_file = self.slave_fs.search(path)
-            if slave_file and path in sc and not master_file & slave_file:
+            if not master_file & self.slave_fs.search(path):
                 # File is different, so slave file is conflict and we copy
                 # master file over.
                 move_conflict(path)
@@ -69,8 +70,7 @@ class Erwin:
                         f"Incremental delta received from {source[0]}:\n{delta}"
                     )
                     self._queue.put((delta, source, dest))
-
-        LOGGER.info("Watching for FS state changes")
+            LOGGER.trace("Collector thread is terminating.")
 
         watches = [
             threading.Thread(
@@ -90,6 +90,7 @@ class Erwin:
             watch.start()
 
         while True:
+            LOGGER.info("Watching for FS state changes")
             delta, source, dest = self._queue.get()
             delta.apply(source, dest)
             LOGGER.debug(f"Incremental delta applied to {dest[0]}")

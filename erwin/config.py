@@ -35,8 +35,6 @@ class ErwinConfiguration:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self._save_states()
-
         if self._orig_sig_handlers:
             LOGGER.debug("Restoring signal handlers")
             for h, s in zip(self._orig_sig_handlers, self.SIGNALS):
@@ -88,6 +86,10 @@ class ErwinConfiguration:
             yaml.safe_dump(self._config, cf)
 
     def _save_states(self, signum=None, frame=None):
+        if signum:
+            print("")
+            LOGGER.warn(f"Received termination signal ({signum}). Shutting down...")
+
         if self._master_state:
             self._master_state.save(self._master_state_file)
             LOGGER.info("Master FS state saved")
@@ -96,7 +98,6 @@ class ErwinConfiguration:
             LOGGER.info("Slave FS state saved")
 
         if signum:
-            LOGGER.warn(f"Received termination signal ({signum}). Shutting down...")
             exit(signum)
 
     def load_fs_states(self, alias=None):
