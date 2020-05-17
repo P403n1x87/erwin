@@ -1,6 +1,36 @@
+# This file is part of "erwin" which is released under GPL.
+#
+# See file LICENCE or go to http://www.gnu.org/licenses/ for full license
+# details.
+#
+# Erwin is a cloud storage synchronisation service.
+#
+# Copyright (c) 2020 Gabriele N. Tornetta <phoenix1987@gmail.com>.
+# All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+from appdirs import user_log_dir
 from ansimarkup import parse
 import logging
+from logging.handlers import RotatingFileHandler
 import os
+import os.path
+
+from erwin import APP_NAME, AUTHOR
+
+LOG_FOLDER = user_log_dir(APP_NAME, AUTHOR)
+os.makedirs(LOG_FOLDER, exist_ok=True)
 
 
 class ColorFormatter(logging.Formatter):
@@ -48,6 +78,19 @@ _handler.setFormatter(
     )
 )
 LOGGER.addHandler(_handler)
+
+_rfile_handler = RotatingFileHandler(
+    os.path.join(LOG_FOLDER, APP_NAME + ".log"), maxBytes=4096, backupCount=1
+)
+_rfile_handler.setFormatter(
+    logging.Formatter(
+        "{asctime}.{msecs:03.0f} [{name}] {levelname:18} {threadName:12} {message} "
+        "({filename}@{lineno}, in {funcName})",
+        style="{",
+        datefmt="%H:%M:%S",
+    )
+)
+LOGGER.addHandler(_rfile_handler)
 
 
 # Set logger level

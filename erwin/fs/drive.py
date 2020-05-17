@@ -1,3 +1,25 @@
+# This file is part of "erwin" which is released under GPL.
+#
+# See file LICENCE or go to http://www.gnu.org/licenses/ for full license
+# details.
+#
+# Erwin is a cloud storage synchronisation service.
+#
+# Copyright (c) 2020 Gabriele N. Tornetta <phoenix1987@gmail.com>.
+# All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 from collections import defaultdict
 import datetime
 from httplib2 import Http, ServerNotFoundError
@@ -43,6 +65,10 @@ _FILE_FIELDS = [
     # "spaces",
     # "headRevisionId",
 ]
+
+
+class UnknownParent(Exception):
+    pass
 
 
 def suppresserror(f):
@@ -222,8 +248,11 @@ class GoogleDriveFS(FileSystem):
             path_list.append(partial_path)
             return path_list
 
-        for parent in parents:
-            self._get_paths(self._file_map[parent], partial_path, path_list)
+        try:
+            for parent in parents:
+                self._get_paths(self._file_map[parent], partial_path, path_list)
+        except KeyError as e:
+            raise UnknownParent() from e
 
         return path_list
 
@@ -248,7 +277,6 @@ class GoogleDriveFS(FileSystem):
 
         return {"file": parent, "children": get_children(parent)}
 
-    # @suppresserror
     def _get_changes(self):
         start_token = self._changes_token or (
             self._drive.changes()
@@ -270,7 +298,9 @@ class GoogleDriveFS(FileSystem):
         moved = []
         removed = []
 
-        for change in changes:
+        while changes:
+            change = changes.pop(0)
+
             file_id = change["fileId"]
             if not file_id or "file" not in change:
                 continue
@@ -282,43 +312,55 @@ class GoogleDriveFS(FileSystem):
 
             new_file = self._to_file(dfile) if not dfile["trashed"] else None
 
-            old_dfile = self._file_map.get(file_id, None)
-            if old_dfile:
-                old_file = self._to_file(old_dfile)
-                if new_file:
-                    if old_file.parents == new_file.parents and old_file == new_file:
-                        continue
+            try:
+                old_dfile = self._file_map.get(file_id, None)
+                if old_dfile:
+                    old_file = self._to_file(old_dfile)
+                    if new_file:
+                        if (
+                            old_file.parents == new_file.parents
+                            and old_file == new_file
+                        ):
+                            continue
 
-                    if old_file.parents != new_file.parents and (
-                        old_file == new_file
-                        or old_file.is_folder
-                        and new_file.is_folder
-                    ):
-                        src, dst = self._path(old_dfile), self._path(dfile)
-                        moved.append((src, dst))
-                        self.state.move(src, dst)
-                    elif old_file.parents == new_file.parents and old_file != new_file:
-                        path = self._path(dfile)
-                        added.append((new_file, path))
-                        self.state.add(new_file, path)
+                        if old_file.parents != new_file.parents and (
+                            old_file == new_file
+                            or old_file.is_folder
+                            and new_file.is_folder
+                        ):
+                            src, dst = self._path(old_dfile), self._path(dfile)
+                            moved.append((src, dst))
+                            self.state.move(src, dst)
+                        elif (
+                            old_file.parents == new_file.parents
+                            and old_file != new_file
+                        ):
+                            path = self._path(dfile)
+                            added.append((new_file, path))
+                            self.state.add(new_file, path)
+                        else:
+                            old_path = self._path(old_dfile)
+                            new_path = self._path(dfile)
+                            removed.append(old_path)
+                            added.append((new_file, new_path))
                     else:
-                        old_path = self._path(old_dfile)
-                        new_path = self._path(dfile)
-                        removed.append(old_path)
-                        added.append((new_file, new_path))
-                else:
-                    path = self._path(old_dfile)
-                    removed.append(path)
-                    self.state.remove(path)
-                    del self._file_map[file_id]
+                        path = self._path(old_dfile)
+                        removed.append(path)
+                        self.state.remove(path)
+                        del self._file_map[file_id]
 
-            elif new_file:
-                path = self._path(dfile)
-                added.append((new_file, path))
-                self.state.add(new_file, path)
+                elif new_file:
+                    path = self._path(dfile)
+                    added.append((new_file, path))
+                    self.state.add(new_file, path)
 
-            if not dfile["trashed"]:
-                self._file_map[file_id] = dfile
+                if not dfile["trashed"]:
+                    self._file_map[file_id] = dfile
+
+            except UnknownParent:
+                # Changes are not received in the "right" order so we try
+                # to deal with the current change again later on.
+                changes.append(change)
 
         return Delta(added, moved, removed)
 
@@ -517,7 +559,8 @@ class GoogleDriveFS(FileSystem):
             folder, name = os.path.split(path)
             parent = self.search(folder)
             if not parent:
-                raise RuntimeError("Destination folder does not exist.")
+                self.makedirs(folder)
+                parent = self.search(folder)
 
             new_file = self._to_file(
                 self._drive.files()
@@ -533,6 +576,23 @@ class GoogleDriveFS(FileSystem):
                         stream,
                         mimetype=mimetypes.guess_type(name)[0] or self.DEFAULT_MIMETYPE,
                     ),
+                    fields=GoogleDriveFS.FILE_FIELDS,
+                )
+                .execute()
+            )
+
+        # Ensure that modified date matches
+        while new_file.modified_date != modified_date:
+            sleep(0.001)
+            new_file = self._to_file(
+                self._drive.files()
+                .update(
+                    fileId=new_file._id,
+                    body={
+                        "modifiedTime": datetime.datetime.strftime(
+                            modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
+                        )
+                    },
                     fields=GoogleDriveFS.FILE_FIELDS,
                 )
                 .execute()
@@ -584,13 +644,19 @@ class GoogleDriveFS(FileSystem):
         head, tail = os.path.split(dst)
         dst_dir = self.search(head)
         if not dst_dir:
-            raise RuntimeError("Destination folder does not exist.")
+            self.makedirs(head)
+            dst_dir = self.search(head)
 
         dest_file = self._to_file(
             self._drive.files()
             .update(
                 fileId=file._id,
-                body={"name": tail},
+                body={
+                    "name": tail,
+                    "modifiedTime": datetime.datetime.strftime(
+                        file.modified_date, "%Y-%m-%dT%H:%M:%S.%fZ"
+                    ),
+                },
                 addParents=dst_dir._id,
                 removeParents=",".join(file.parents),
                 fields=GoogleDriveFS.FILE_FIELDS,

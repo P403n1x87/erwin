@@ -16,8 +16,8 @@ He's both useless and useful, until you try him for the first time :).</p>
     <img src="https://travis-ci.com/P403n1x87/erwin.svg?token=fzW2yzQyjwys4tWf9anS&branch=master"
          alt="Travis CI Build Status">
   </a>
-  <img src="https://img.shields.io/badge/version-0.2.0--beta-blue.svg"
-       alt="Version 0.2.0-beta">
+  <img src="https://img.shields.io/badge/version-0.2.1--beta-blue.svg"
+       alt="Version 0.2.1-beta">
   <a href="https://github.com/P403n1x87/erwin/blob/master/LICENSE.md">
     <img src="https://img.shields.io/badge/license-GPLv3-ff69b4.svg"
          alt="LICENSE">

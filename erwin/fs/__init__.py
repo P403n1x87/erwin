@@ -1,3 +1,25 @@
+# This file is part of "erwin" which is released under GPL.
+#
+# See file LICENCE or go to http://www.gnu.org/licenses/ for full license
+# details.
+#
+# Erwin is a cloud storage synchronisation service.
+#
+# Copyright (c) 2020 Gabriele N. Tornetta <phoenix1987@gmail.com>.
+# All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from copy import deepcopy
@@ -16,9 +38,10 @@ def wait(source_file, dest_fs, dst):
     while True:
         dest_file = dest_fs.search(dst)
         if source_file & dest_file:
-            break
+            LOGGER.debug(f"Destination file {dst} on {dest_fs} became available.")
+            return dest_file
         sleep(0.001)
-    return dest_file
+        LOGGER.trace(f"File mismatch: expected {source_file} but got {dest_file}")
 
 
 def wait_dir(dest_fs, dst):
@@ -26,10 +49,9 @@ def wait_dir(dest_fs, dst):
     while True:
         dest_file = dest_fs.search(dst)
         if dest_file:
-            break
+            LOGGER.debug(f"Destination directory {dst} on {dest_fs} became available.")
+            return dest_file
         sleep(0.001)
-    LOGGER.debug(f"Destination directory {dst} on {dest_fs} became available.")
-    return dest_file
 
 
 def wait_removed(dest_fs, path):
